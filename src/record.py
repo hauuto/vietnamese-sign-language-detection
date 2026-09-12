@@ -5,32 +5,103 @@ Chạy: python src/record.py
 
 Luồng: nhập tên người quay -> chọn block A/B -> hệ thống nạp/tạo file tiến độ
 progress_{person}_{block}.json -> lần lượt hiện từng lớp theo thứ tự đã xáo trộn
--> bấm SPACE để đếm ngược và ghi 1.5s -> tự động sang mẫu kế tiếp.
+-> bấm SPACE để đếm ngược và ghi -> hệ thống DỪNG LẠI CHỜ XÁC NHẬN
+-> bấm SPACE để xác nhận đạt, hoặc R để ghi lại (chưa đạt) -> chỉ sau khi xác
+nhận mới tính là xong và sang mẫu kế tiếp.
 
-Phím tắt:
-  SPACE : bắt đầu ghi mẫu hiện tại
-  R     : ghi lại mẫu VỪA XONG (đè lên file cũ)
+Phím tắt khi đang CHỜ CHỌN mẫu để quay:
+  SPACE : đếm ngược rồi ghi mẫu hiện tại
   N     : bỏ qua mẫu hiện tại, quay lại sau (đẩy xuống cuối hàng đợi)
-  L     : chuyển chế độ quay dài (clip đánh vần 4s) — bấm lại L để quay về chế độ thường
+  L     : chuyển chế độ quay dài (clip đánh vần) — bấm lại L để quay về chế độ thường
   Q     : lưu tiến độ và thoát, chạy lại sẽ tiếp tục đúng chỗ dừng
+
+Phím tắt khi đang CHỜ XÁC NHẬN mẫu vừa ghi:
+  SPACE : xác nhận đạt, tính là xong, sang mẫu kế tiếp
+  R     : chưa đạt, đếm ngược và ghi lại đè lên đúng file cũ, rồi chờ xác nhận tiếp
+  Q     : thoát, KHÔNG tính mẫu này là xong (lần sau sẽ quay lại từ mẫu này)
 
 Quan trọng:
   - Video ghi vào raw/{person}/  — KHÔNG đưa vào git (xem .gitignore)
   - Tên file: {code}_{person}_{block}_{seq:03d}.mp4
   - progress_*.json ghi lại danh sách đã xong, xóa file này = quay lại từ đầu
+  - Không có ảnh tham chiếu — chỉ hiện tên chữ trên màn hình
+
+Ghi chú kỹ thuật: cv2.putText (OpenCV) KHÔNG hỗ trợ tiếng Việt có dấu — font
+Hershey của nó chỉ vẽ được ASCII, ký tự có dấu bị vẽ sai nét và chồng lên
+nhau. Script này dùng Pillow (PIL) để vẽ chữ, hỗ trợ Unicode đầy đủ.
 """
 import cv2
 import json
 import os
 import sys
 import time
+import numpy as np
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(__file__))
-from classes import build_order, display_name, CLIP_SECONDS, SPELLING_CLIP_SECONDS, PEOPLE
+from classes import (
+    build_order, display_name, CLIP_SECONDS, COUNTDOWN_SECONDS,
+    SPELLING_CLIP_SECONDS, PEOPLE,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "raw"
+
+# --- Font hỗ trợ tiếng Việt: thử lần lượt các font phổ biến trên Windows/Linux/macOS ---
+_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/tahoma.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+]
+_FONT_CACHE = {}
+_font_warned = False
+
+
+def _get_font(size):
+    global _font_warned
+    if size in _FONT_CACHE:
+        return _FONT_CACHE[size]
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            font = ImageFont.truetype(path, size)
+            _FONT_CACHE[size] = font
+            return font
+    if not _font_warned:
+        print("CANH BAO: khong tim thay font TrueType nao, chu co dau tieng Viet co the hien sai.")
+        _font_warned = True
+    font = ImageFont.load_default()
+    _FONT_CACHE[size] = font
+    return font
+
+
+def draw_hud(frame_bgr, text_lines, color=(255, 255, 255), font_size=18):
+    """Vẽ chữ (hỗ trợ Unicode/tiếng Việt có dấu) lên khung hình qua Pillow.
+    color dùng thứ tự BGR để tương thích với cách gọi cũ của OpenCV.
+    Có nền đen bán trong suốt phía sau mỗi dòng để chữ không bị lẫn vào hình nền,
+    và trả về một MẢNG MỚI (không sửa frame gốc tại chỗ) — luôn dùng giá trị trả về."""
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(pil_img, "RGBA")
+    font = _get_font(font_size)
+    fill = (color[2], color[1], color[0])  # BGR -> RGB
+
+    y = 10
+    line_h = font_size + 12
+    for line in text_lines:
+        bbox = draw.textbbox((14, y), line, font=font)
+        pad = 4
+        draw.rectangle(
+            [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad],
+            fill=(0, 0, 0, 160),
+        )
+        draw.text((14, y), line, font=font, fill=fill)
+        y += line_h
+
+    out_rgb = np.array(pil_img)
+    return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
 
 
 def get_progress_path(person, block):
@@ -62,15 +133,6 @@ def probe_fps(cap, seconds=2.0):
     return n / elapsed if elapsed > 0 else 30.0
 
 
-def draw_hud(frame, text_lines, color=(255, 255, 255)):
-    y = 30
-    for line in text_lines:
-        cv2.putText(frame, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1, cv2.LINE_AA)
-        y += 28
-    return frame
-
-
 def record_clip(cap, out_path, duration_s, fps_estimate, label_text):
     """Ghi theo THỜI GIAN (không theo số khung hình cố định) — bù cho FPS khác nhau giữa các máy."""
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -84,11 +146,10 @@ def record_clip(cap, out_path, duration_s, fps_estimate, label_text):
         ok, frame = cap.read()
         if not ok:
             continue
-        writer.write(frame)
+        writer.write(frame)  # ghi RAW, không có overlay
         n_frames += 1
-        disp = frame.copy()
         remaining = duration_s - (time.time() - t0)
-        draw_hud(disp, [f"DANG GHI: {label_text}", f"con lai {remaining:0.1f}s"], color=(0, 0, 255))
+        disp = draw_hud(frame, [f"ĐANG GHI: {label_text}", f"còn lại {remaining:0.1f}s"], color=(0, 0, 255))
         cv2.imshow("VSL Recorder", disp)
         cv2.waitKey(1)
     writer.release()
@@ -111,10 +172,15 @@ def main():
     progress = load_progress(person, block)
     done = set(progress["done"])
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # DSHOW giam do tre so voi backend mac dinh tren Windows
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(0)  # may khong ho tro DSHOW thi lui ve mac dinh
     if not cap.isOpened():
         print("KHONG mo duoc webcam. Kiem tra lai thiet bi.")
         return
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # khong de driver don khung hinh cu lai
+    # LUU Y: khong ep dinh dang MJPG nua — mot so webcam khong ho tro tot qua DSHOW,
+    # gay hinh bi vo/nhoe. Neu may ban van lag sau ban vá nay, bao lai de bat MJPG co dieu kien.
 
     print("Dang do FPS that cua may (2 giay)...")
     fps = probe_fps(cap)
@@ -122,34 +188,98 @@ def main():
     if fps < 15:
         print("CANH BAO: FPS duoi 15, can xem xet doi may khac truoc khi quay that.")
 
+    # Kiem tra lai voi file THAT tren dia, khong chi tin file progress_*.json.
+    # Neu ai do xoa 1 file .mp4 (vi du do quay hong) ma progress van con ghi "da xong",
+    # thi phai loai no khoi "done" de no tu dong quay lai vao hang doi.
+    verified_done = set()
+    missing_but_marked = []
+    for code, seq in tasks:
+        key = f"{code}_{seq:03d}"
+        if key in done:
+            video_path = person_dir / f"{code}_{person}_{block}_{seq:03d}.mp4"
+            if video_path.exists():
+                verified_done.add(key)
+            else:
+                missing_but_marked.append(video_path.name)
+    if missing_but_marked:
+        print(f"CANH BAO: {len(missing_but_marked)} file da bi xoa nhung progress ghi la xong:")
+        for name in missing_but_marked:
+            print("  -", name)
+        print("Da tu dong dua lai vao hang doi de quay lai.")
+        save_progress(person, block, verified_done)
+    done = verified_done
+
     long_mode = False
     long_idx = 1
     queue = [t for t in tasks if f"{t[0]}_{t[1]:03d}" not in done]
+    pending = None  # dict {"out_path","label","dur"}: mẫu vừa ghi, đang chờ người dùng xác nhận đạt hay chưa
 
-    print(f"Con lai {len(queue)}/{len(tasks)} mau. SPACE=ghi, R=ghi lai, N=bo qua, L=che do dai, Q=thoat")
+    def countdown_and_record(out_path, label, dur):
+        """Đếm ngược rồi ghi 1 clip vào out_path (ghi đè nếu đã tồn tại)."""
+        for c in range(COUNTDOWN_SECONDS, 0, -1):
+            t_start = time.time()
+            while time.time() - t_start < 1.0:
+                ok, f2 = cap.read()
+                if ok:
+                    f2disp = draw_hud(f2, [f">> {label}", f"chuẩn bị... {c}"], color=(0, 165, 255))
+                    cv2.imshow("VSL Recorder", f2disp)
+                cv2.waitKey(1)
+        record_clip(cap, out_path, dur, fps, label)
+        print(f"Da luu: {out_path.name}")
+
+    print(f"Con lai {len(queue)}/{len(tasks)} mau. SPACE=ghi, N=bo qua, L=che do dai, Q=thoat")
 
     while True:
+        if pending is not None:
+            # Đang chờ xác nhận mẫu vừa ghi — KHÔNG cho chuyển sang mẫu khác cho đến khi quyết định.
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            disp = draw_hud(frame, [
+                f">> {pending['label']}",
+                "Da ghi xong. Dat chua?",
+                "SPACE=Đạt, sang mẫu kế   R=Chưa đạt, ghi lại   Q=Thoát (không tính xong)",
+            ], color=(0, 255, 0))
+            cv2.imshow("VSL Recorder", disp)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("q"):
+                break
+            elif key == ord("r"):
+                countdown_and_record(pending["out_path"], pending["label"], pending["dur"])
+                # vẫn ở trạng thái chờ xác nhận, chờ người dùng bấm lại
+            elif key == ord(" "):
+                if long_mode:
+                    long_idx += 1
+                else:
+                    code, seq = queue[0]
+                    done.add(f"{code}_{seq:03d}")
+                    save_progress(person, block, done)
+                    queue.pop(0)
+                pending = None
+            continue
+
         if long_mode:
-            label = f"clip danh van #{long_idx}"
+            label = f"clip đánh vần #{long_idx}"
             out_path = person_dir / f"spell_{person}_{long_idx:02d}.mp4"
         else:
             if not queue:
                 print("HET HANG DOI. Da quay xong toan bo block nay.")
                 break
             code, seq = queue[0]
-            label = f"{display_name(code)}  [{code}]  mau {seq}"
+            label = f"{display_name(code)}  [{code}]  mẫu {seq}"
             out_path = person_dir / f"{code}_{person}_{block}_{seq:03d}.mp4"
 
         ok, frame = cap.read()
         if not ok:
             continue
-        remain_txt = "che do dai (danh van)" if long_mode else f"con {len(queue)} mau"
-        draw_hud(frame, [
-            f"Nguoi: {person}  Block: {block}  ({remain_txt})",
+        remain_txt = "chế độ đánh vần" if long_mode else f"còn {len(queue)} mẫu"
+        disp = draw_hud(frame, [
+            f"Người: {person}   Block: {block}   ({remain_txt})",
             f">> {label}",
-            "SPACE=ghi  R=ghi lai  N=bo qua  L=doi che do  Q=thoat",
+            "SPACE=ghi   N=bỏ qua   L=đổi chế độ   Q=thoát",
         ])
-        cv2.imshow("VSL Recorder", frame)
+        cv2.imshow("VSL Recorder", disp)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
@@ -159,24 +289,12 @@ def main():
         elif key == ord("n") and not long_mode and queue:
             queue.append(queue.pop(0))  # đẩy xuống cuối, quay lại sau
         elif key == ord(" "):
-            # đếm ngược 3 giây trước khi ghi thật
-            for c in [3, 2, 1]:
-                ok, f2 = cap.read()
-                if ok:
-                    draw_hud(f2, [f">> {label}", f"chuan bi... {c}"], color=(0, 165, 255))
-                    cv2.imshow("VSL Recorder", f2)
-                cv2.waitKey(700)
+            # Đếm ngược, ĐỌC LIÊN TỤC trong lúc chờ thay vì chặn bằng waitKey dài.
+            # Nếu không đọc liên tục, driver webcam (đặc biệt trên Windows) dồn khung hình
+            # cũ vào bộ đệm, và khi bắt đầu ghi thật thì mấy khung đầu tiên là hình bị trễ.
             dur = SPELLING_CLIP_SECONDS if long_mode else CLIP_SECONDS
-            record_clip(cap, out_path, dur, fps, label)
-            if long_mode:
-                long_idx += 1
-            else:
-                done.add(f"{code}_{seq:03d}")
-                save_progress(person, block, done)
-                queue.pop(0)
-            print(f"Da luu: {out_path.name}")
-        elif key == ord("r"):
-            print("Ghi lai mau vua roi: bam SPACE sau khi lui lai bang tay (chua tu dong lui hang doi).")
+            countdown_and_record(out_path, label, dur)
+            pending = {"out_path": out_path, "label": label, "dur": dur}
 
     cap.release()
     cv2.destroyAllWindows()

@@ -21,17 +21,20 @@ ALL_CLASSES = TINH + DONG  # 34 lớp, thứ tự cố định để tái lập 
 
 assert len(TINH) == 22 and len(DONG) == 12 and len(ALL_CLASSES) == 34
 
-# Số mẫu mỗi lớp mỗi người, chia theo block (xem mục 06 của kế hoạch)
+# Số mẫu mỗi lớp mỗi người, chia theo block A/B (đã giảm theo yêu cầu ngày 12/09:
+# tĩnh dễ nên ít lần lặp, động là bằng chứng chính nên giữ nhiều hơn một chút)
 SAMPLES_PER_BLOCK = {
-    "A": {"tinh": 5, "dong": 8},
-    "B": {"tinh": 5, "dong": 7},
+    "A": {"tinh": 2, "dong": 3},
+    "B": {"tinh": 2, "dong": 3},
 }
+# Tổng mỗi lớp mỗi người: tĩnh 4, động 6
 
 # 10 lớp dùng cho phép đo P3 (người ngoài lab) — xem mục 08
 P3_CLASSES = ["a", "m", "n", "s", "o", "l", "tone_s", "tone_j", "aw", "ow"]
 P3_SAMPLES_PER_CLASS = 10
 
-CLIP_SECONDS = 1.5          # độ dài một mẫu ký hiệu, tính theo THỜI GIAN không theo số khung hình
+CLIP_SECONDS = 3.0          # độ dài một mẫu ký hiệu, tính theo THỜI GIAN không theo số khung hình
+COUNTDOWN_SECONDS = 5        # thời gian đếm ngược trước khi ghi thật (tăng vì không còn ảnh mẫu để nhớ tư thế)
 RESAMPLE_STEPS = 45         # số bước sau khi lấy mẫu lại — cố định bất kể FPS máy quay
 SPELLING_CLIP_SECONDS = 4.0
 SPELLING_CLIPS_PER_PERSON = 10
