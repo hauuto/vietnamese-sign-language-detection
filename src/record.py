@@ -188,24 +188,40 @@ def main():
     if fps < 15:
         print("CANH BAO: FPS duoi 15, can xem xet doi may khac truoc khi quay that.")
 
-    # Kiem tra lai voi file THAT tren dia, khong chi tin file progress_*.json.
-    # Neu ai do xoa 1 file .mp4 (vi du do quay hong) ma progress van con ghi "da xong",
-    # thi phai loai no khoi "done" de no tu dong quay lai vao hang doi.
+    # Kiem tra lai voi file THAT tren dia theo CA HAI CHIEU, khong chi tin file progress_*.json:
+    # (1) progress ghi "da xong" nhung file .mp4 bi xoa (vd do quay hong) -> loai khoi done,
+    #     de no tu dong quay lai vao hang doi.
+    # (2) file .mp4 co that tren dia (da quay va co dung dinh dang ten) nhung progress KHONG
+    #     ghi la xong -> tu dong nhan la da xong. Truong hop nay xay ra khi progress_*.json bi
+    #     mat/ghi de rieng voi video (vd dong bo OneDrive bi xung dot, tat may dot ngot ngay
+    #     sau khi ghi nhung truoc khi kip luu progress).
     verified_done = set()
     missing_but_marked = []
+    recovered_from_disk = []
     for code, seq in tasks:
         key = f"{code}_{seq:03d}"
+        video_path = person_dir / f"{code}_{person}_{block}_{seq:03d}.mp4"
+        file_exists = video_path.exists() and video_path.stat().st_size > 0
         if key in done:
-            video_path = person_dir / f"{code}_{person}_{block}_{seq:03d}.mp4"
-            if video_path.exists():
+            if file_exists:
                 verified_done.add(key)
             else:
                 missing_but_marked.append(video_path.name)
+        elif file_exists:
+            verified_done.add(key)
+            recovered_from_disk.append(video_path.name)
     if missing_but_marked:
         print(f"CANH BAO: {len(missing_but_marked)} file da bi xoa nhung progress ghi la xong:")
         for name in missing_but_marked:
             print("  -", name)
         print("Da tu dong dua lai vao hang doi de quay lai.")
+    if recovered_from_disk:
+        print(f"CANH BAO: {len(recovered_from_disk)} file da co san tren dia nhung progress KHONG ghi la xong (co the do progress bi mat/ghi de):")
+        for name in recovered_from_disk:
+            print("  -", name)
+        print("Da tu dong danh dau la xong, khong bat quay lai. Neu file nao chat luong khong dat,")
+        print("hay tu xoa file .mp4 do bang tay roi chay lai script — no se tu quay lai vao hang doi.")
+    if missing_but_marked or recovered_from_disk:
         save_progress(person, block, verified_done)
     done = verified_done
 
