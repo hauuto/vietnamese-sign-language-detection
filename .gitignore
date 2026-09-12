@@ -1,0 +1,27 @@
+# Dữ liệu — không bao giờ đưa vào git, chỉ đi qua ổ cứng / cloud
+raw/*
+!raw/.gitkeep
+raw_external/*
+!raw_external/.gitkeep
+landmarks/*
+!landmarks/.gitkeep
+models/*
+!models/.gitkeep
+progress_*.json
+*.mp4
+*.avi
+*.npy
+*.pt
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
