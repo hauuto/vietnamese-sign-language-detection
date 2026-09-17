@@ -12,7 +12,6 @@ nhận mới tính là xong và sang mẫu kế tiếp.
 Phím tắt khi đang CHỜ CHỌN mẫu để quay:
   SPACE : đếm ngược rồi ghi mẫu hiện tại
   N     : bỏ qua mẫu hiện tại, quay lại sau (đẩy xuống cuối hàng đợi)
-  L     : chuyển chế độ quay dài (clip đánh vần) — bấm lại L để quay về chế độ thường
   Q     : lưu tiến độ và thoát, chạy lại sẽ tiếp tục đúng chỗ dừng
 
 Phím tắt khi đang CHỜ XÁC NHẬN mẫu vừa ghi:
@@ -27,7 +26,7 @@ Quan trọng:
   - Không có ảnh tham chiếu — chỉ hiện tên chữ trên màn hình
 
 Ghi chú kỹ thuật: cv2.putText (OpenCV) KHÔNG hỗ trợ tiếng Việt có dấu — font
-Hershey của nó chỉ vẽ được ASCII, ký tự có dấu bị vẽ sai nét và chồng lên
+Hershey của nó chỉ vẽ được ASCII, ký tự có dấu bị vẽ sai nét và cng lên
 nhau. Script này dùng Pillow (PIL) để vẽ chữ, hỗ trợ Unicode đầy đủ.
 """
 import cv2
@@ -293,15 +292,13 @@ def main():
         disp = draw_hud(frame, [
             f"Người: {person}   Block: {block}   ({remain_txt})",
             f">> {label}",
-            "SPACE=ghi   N=bỏ qua   L=đổi chế độ   Q=thoát",
+            "SPACE=ghi   N=bỏ qua  Q=thoát",
         ])
         cv2.imshow("VSL Recorder", disp)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
             break
-        elif key == ord("l"):
-            long_mode = not long_mode
         elif key == ord("n") and not long_mode and queue:
             queue.append(queue.pop(0))  # đẩy xuống cuối, quay lại sau
         elif key == ord(" "):
