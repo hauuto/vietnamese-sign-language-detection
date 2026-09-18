@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from extract_landmarks import ensure_model, make_landmarker  # dùng lại đúng cấu hình landmarker của pipeline chính
 
 # ============================== CẤU HÌNH — SỬA Ở ĐÂY ==============================
-MODE = "report"                       # "video" | "all" | "report"
+MODE = "all"                       # "video" | "all" | "report"
 VIDEO_PATH = "raw/hau/a_hau_A_1.mp4"  # chỉ dùng khi MODE = "video"
 N_PER_PERSON = 4                      # chỉ dùng khi MODE = "report"
 SEED = 42                             # chỉ dùng khi MODE = "report"
