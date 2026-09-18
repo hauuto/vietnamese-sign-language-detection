@@ -19,11 +19,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__),".." ,"src"))
 from classes import ALL_CLASSES, TINH, DONG, class_group, samples_for, display_name
 
 LANDMARK_DIR = Path("landmarks/raw")
-OUT_DIR = Path("eda_output")
+OUT_DIR = Path("outputs/eda")
 FNAME_RE = re.compile(r"^([a-z_]+)_([a-z]+)_([AB])_(\d+)\.npy$")
 
 # Bảng màu — xanh dương (chính) và cam (đối chiếu), theo hệ màu categorical

@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from extract_landmarks import ensure_model, make_landmarker  # dùng lại đúng cấu hình landmarker của pipeline chính
 
 # ============================== CẤU HÌNH — SỬA Ở ĐÂY ==============================
@@ -29,7 +29,7 @@ N_PER_PERSON = 4                      # chỉ dùng khi MODE = "report"
 SEED = 42                             # chỉ dùng khi MODE = "report"
 # ====================================================================================
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW_ROOT = ROOT / "raw"
 OUT_ROOT = ROOT / "visualize_output"
 PEOPLE = ["hau", "khoi", "tai", "vy"]
