@@ -1,0 +1,22 @@
+[
+  {
+    "test_person": "hau",
+    "accuracy": 0.61875,
+    "latency_ms": 1.0723277400029474
+  },
+  {
+    "test_person": "khoi",
+    "accuracy": 0.58125,
+    "latency_ms": 1.1907112299923028
+  },
+  {
+    "test_person": "tai",
+    "accuracy": 0.575,
+    "latency_ms": 1.2692935300037789
+  },
+  {
+    "test_person": "vy",
+    "accuracy": 0.70625,
+    "latency_ms": 1.2661138099974778
+  }
+]
