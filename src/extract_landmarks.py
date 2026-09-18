@@ -102,17 +102,29 @@ def extract_raw_landmarks(video_path: Path):
 
 
 def to_feature_sequence(frames, two_hands: bool):
-    """Chuyển list frame -> mảng (T, D). Tay vắng mặt = vector 0 (không nội suy hộ)."""
+    """Chuyển list frame -> mảng (T, D). Tay vắng mặt = vector 0 (không nội suy hộ).
+
+    Chế độ 1 tay (mặc định, two_hands=False): KHÔNG cứng lấy nhãn "Left" — lấy bất
+    kỳ tay nào MediaPipe phát hiện được (Left hoặc Right, ưu tiên Left nếu cả 2 xuất
+    hiện). Video quay bằng webcam thường KHÔNG được lật gương, trong khi MediaPipe
+    gán nhãn Left/Right dựa trên giả định ảnh đầu vào đã lật gương — nên nhãn có thể
+    bị đảo so với tay thật của người quay. Nếu cứng lấy "Left", người ký hiệu bằng
+    tay ngược quy ước sẽ bị ghi toàn vector 0 (coi như mất tay) một cách âm thầm.
+    Lấy theo "tay nào có" tránh hoàn toàn rủi ro này.
+    """
     dim = 126 if two_hands else 63
     if not frames:
         return np.zeros((0, dim), dtype=np.float32)
+    zero_hand = np.zeros((21, 3), dtype=np.float32)
     seq = []
     for entry in frames:
-        left = entry["Left"] if entry["Left"] is not None else np.zeros((21, 3), dtype=np.float32)
-        vec = left.flatten()
         if two_hands:
-            right = entry["Right"] if entry["Right"] is not None else np.zeros((21, 3), dtype=np.float32)
-            vec = np.concatenate([vec, right.flatten()])
+            left = entry["Left"] if entry["Left"] is not None else zero_hand
+            right = entry["Right"] if entry["Right"] is not None else zero_hand
+            vec = np.concatenate([left.flatten(), right.flatten()])
+        else:
+            hand = entry["Left"] if entry["Left"] is not None else entry["Right"]
+            vec = (hand if hand is not None else zero_hand).flatten()
         seq.append(vec)
     return np.stack(seq)
 
