@@ -53,63 +53,48 @@ def load_all():
 
 
 def bieu_do_so_luong(records):
-    """So sánh số mẫu thực tế và kỳ vọng, theo từng người."""
+    """Số mẫu thực tế theo từng người."""
     persons = sorted(set(r["person"] for r in records))
     count = defaultdict(int)
     for r in records:
         count[(r["code"], r["person"])] += 1
 
     tong_thuc_te = {p: 0 for p in persons}
-    tong_ky_vong = {p: 0 for p in persons}
     for code in ALL_CLASSES:
-        ky_vong_moi_nguoi = samples_for(code, "A") + samples_for(code, "B")
         for p in persons:
             tong_thuc_te[p] += count[(code, p)]
-            tong_ky_vong[p] += ky_vong_moi_nguoi
 
     x = np.arange(len(persons))
-    w = 0.35
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(x - w / 2, [tong_ky_vong[p] for p in persons], width=w,
-           label="Kỳ vọng", color=MAU_XAM)
-    ax.bar(x + w / 2, [tong_thuc_te[p] for p in persons], width=w,
-           label="Thực tế", color=MAU_XANH)
-    for i, p in enumerate(persons):
-        ax.text(i - w / 2, tong_ky_vong[p] + 2, str(tong_ky_vong[p]), ha="center", fontsize=9)
-        ax.text(i + w / 2, tong_thuc_te[p] + 2, str(tong_thuc_te[p]), ha="center", fontsize=9,
-                color=MAU_XANH if tong_thuc_te[p] == tong_ky_vong[p] else "#e34948")
+    fig, ax = plt.subplots(figsize=(7, 5))
+    bars = ax.bar(x, [tong_thuc_te[p] for p in persons], color=MAU_XANH)
+    for b, p in zip(bars, persons):
+        ax.text(b.get_x() + b.get_width() / 2, tong_thuc_te[p] + 2,
+                 str(tong_thuc_te[p]), ha="center", fontsize=9)
     ax.set_xticks(x)
     ax.set_xticklabels(persons)
     ax.set_ylabel("Số mẫu")
-    ax.set_title("Số mẫu thực tế so với kỳ vọng, theo từng người")
-    ax.legend(loc="upper right")
+    ax.set_title("Số mẫu thực tế, theo từng người")
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     fig.savefig(OUT_DIR / "01_so_luong_mau.png", dpi=120)
     plt.close(fig)
 
-    # Chi tiết các tổ hợp (lớp, người) bị lệch so với kỳ vọng
-    lech = []
+    # Số mẫu thực tế theo từng tổ hợp (lớp, người)
+    labels = []
+    values = []
     for code in ALL_CLASSES:
-        ky_vong = samples_for(code, "A") + samples_for(code, "B")
         for p in persons:
-            thuc_te = count[(code, p)]
-            if thuc_te != ky_vong:
-                lech.append((f"{display_name(code)} / {p}", thuc_te - ky_vong))
-    if lech:
-        lech.sort(key=lambda x: x[1])
-        labels = [x[0] for x in lech]
-        values = [x[1] for x in lech]
-        fig, ax = plt.subplots(figsize=(9, max(3, 0.35 * len(lech))))
-        colors = [MAU_CAM if v < 0 else MAU_XANH for v in values]
-        ax.barh(labels, values, color=colors)
-        ax.axvline(0, color="black", linewidth=0.8)
-        ax.set_xlabel("Chênh lệch so với kỳ vọng (âm = thiếu, dương = thừa)")
-        ax.set_title("Các tổ hợp (lớp, người) lệch số mẫu so với kỳ vọng")
-        ax.spines[["top", "right"]].set_visible(False)
-        fig.tight_layout()
-        fig.savefig(OUT_DIR / "02_lech_so_mau.png", dpi=120)
-        plt.close(fig)
+            labels.append(f"{display_name(code)} / {p}")
+            values.append(count[(code, p)])
+
+    fig, ax = plt.subplots(figsize=(9, max(3, 0.28 * len(labels))))
+    ax.barh(labels, values, color=MAU_XANH)
+    ax.set_xlabel("Số mẫu thực tế")
+    ax.set_title("Số mẫu thực tế theo từng tổ hợp (lớp, người)")
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "02_so_mau_theo_to_hop.png", dpi=120)
+    plt.close(fig)
 
 
 def bieu_do_chat_luong(records):
@@ -289,8 +274,8 @@ def main():
     bieu_do_theo_nguoi(records)
 
     print(f"Đã lưu toàn bộ biểu đồ vào thư mục: {OUT_DIR.resolve()}")
-    print("  01_so_luong_mau.png          — số mẫu thực tế vs kỳ vọng")
-    print("  02_lech_so_mau.png           — chi tiết tổ hợp (lớp, người) bị lệch (nếu có)")
+    print("  01_so_luong_mau.png          — tổng số mẫu thực tế theo người")
+    print("  02_so_mau_theo_to_hop.png    — số mẫu thực tế theo từng tổ hợp (lớp, người)")
     print("  03_chat_luong_du_lieu.png    — phân bố mất tay + tổng hợp lỗi")
     print("  04_khoang_gia_tri_toa_do.png — toạ độ vượt khung hình, theo người")
     print("  05_nang_luong_chuyen_dong.png— tĩnh vs động, bằng chứng chọn LSTM/Bi-LSTM")
