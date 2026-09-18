@@ -1,0 +1,37 @@
+{
+  "experiment": "E2",
+  "model": "LSTM",
+  "direction": "unidirectional",
+  "hidden_dim": 128,
+  "num_layers": 3,
+  "dropout": 0.5,
+  "epochs": 1000,
+  "batch_size": 64,
+  "device": "cuda",
+  "mean_accuracy": 0.6203125,
+  "std_accuracy": 0.052361237750362645,
+  "mean_latency_ms": 1.1996115774991267,
+  "std_latency_ms": 0.07993515013062363,
+  "per_person": [
+    {
+      "test_person": "hau",
+      "accuracy": 0.61875,
+      "latency_ms": 1.0723277400029474
+    },
+    {
+      "test_person": "khoi",
+      "accuracy": 0.58125,
+      "latency_ms": 1.1907112299923028
+    },
+    {
+      "test_person": "tai",
+      "accuracy": 0.575,
+      "latency_ms": 1.2692935300037789
+    },
+    {
+      "test_person": "vy",
+      "accuracy": 0.70625,
+      "latency_ms": 1.2661138099974778
+    }
+  ]
+}
