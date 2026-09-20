@@ -1,0 +1,31 @@
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
+﻿-- logger module started --
+main: one instance mode ENABLED
+main: Running vlc with the default interface. Use 'cvlc' to use vlc without interface.
+direct3d11 error: SetThumbNailClip failed: 0x800706f4
+-- logger module stopped --
