@@ -3,12 +3,22 @@ Cấu hình + khung đánh giá dùng chung cho cả 4 thực nghiệm (E0, E1, 
 Copy nguyên file này vào đầu notebook Kaggle — không sửa gì trong này, chỉ viết thêm
 1 class Strategy riêng cho mô hình của bạn ở cuối, theo đúng mẫu trong comment.
 """
+import copy
+import gc
+import os
+import random
 import re
+import time
 from pathlib import Path
 from collections import defaultdict
 from typing import Protocol
 
 import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 # ==================== CẤU HÌNH DATASET ====================
 # Dataset: https://www.kaggle.com/datasets/hauuto/vietnamese-sign-language-alphabet
@@ -65,6 +75,12 @@ def run_cross_subject(records, strategy: ModelStrategy, people=PEOPLE):
     for test_person in people:
         train_records = [r for r in records if r["person"] != test_person]
         test_records = [r for r in records if r["person"] == test_person]
+
+        # Một số strategy (E3/DANN) cần biết subject của từng mẫu train để
+        # tạo domain label. Hook này là optional nên E1/E2 vẫn giữ nguyên API.
+        set_fold_context = getattr(strategy, "set_fold_context", None)
+        if set_fold_context is not None:
+            set_fold_context(train_records, test_records, test_person)
 
         X_train_raw = np.stack([r["arr"] for r in train_records])
         y_train = np.array([r["code"] for r in train_records])
@@ -807,6 +823,622 @@ class E1Strategy:
 
         model.to(original_device)
         return float(np.mean(elapsed_ms))
+
+
+# ==================== E3 — DOMAIN-INVARIANT MOTION BI-LSTM ====================
+# Triển khai theo notebook 4-fold: pose + velocity + acceleration + unit-bone,
+# temporal convolution, BiLSTM, attention pooling, DANN/GRL, EMA và subject-CV.
+E3_SEQ_LEN = 45
+E3_VALID_FEATURE_DIMS = (63, 126)
+E3_PROJ_DIM = 96
+E3_HIDDEN_DIM = 96
+E3_NUM_LAYERS = 1
+E3_DROPOUT = 0.35
+E3_LEARNING_RATE = 8e-4
+E3_INNER_MAX_EPOCHS = 100
+E3_BATCH_SIZE = 32
+E3_SEED = 42
+E3_INNER_PATIENCE = 18
+E3_NUM_WORKERS = 2
+E3_WEIGHT_DECAY = 1e-4
+E3_LABEL_SMOOTHING = 0.05
+E3_DOMAIN_LAMBDA_MAX = 0.15
+E3_EMA_DECAY = 0.995
+E3_USE_HAND_NORMALIZATION = True
+E3_USE_TRAIN_AUGMENT = True
+E3_AUG_ROTATE_DEG = 8.0
+E3_AUG_JITTER_STD = 0.007
+E3_AUG_TIME_WARP = 0.10
+E3_AUG_Z_SCALE = 0.10
+E3_TTA_GAMMAS = (1.0,)
+E3_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+E3_OUTPUT_DIR = Path("/kaggle/working/e3_outputs")
+
+
+class _E3GradReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, lambd):
+        ctx.lambd = float(lambd)
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambd * grad_output, None
+
+
+def _e3_grad_reverse(x, lambd=1.0):
+    return _E3GradReverse.apply(x, lambd)
+
+
+class E3DomainInvariantMotionBiLSTM(nn.Module):
+    """Motion-aware BiLSTM với domain-adversarial head dùng lúc train."""
+
+    PARENT = (0, 0, 1, 2, 3, 0, 5, 6, 7, 5, 9, 10, 11, 9, 13, 14, 15, 13, 17, 18, 19)
+
+    def __init__(self, input_dim, proj_dim, hidden_dim, num_layers,
+                 num_classes, num_domains, dropout=0.35):
+        super().__init__()
+        if input_dim % 63 != 0:
+            raise ValueError(f"input_dim phải chia hết cho 63, got {input_dim}")
+
+        self.input_dim = int(input_dim)
+        self.n_hands = input_dim // 63
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim * 4, proj_dim),
+            nn.LayerNorm(proj_dim),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.30),
+        )
+        self.dw3 = nn.Conv1d(proj_dim, proj_dim, kernel_size=3, padding=1, groups=proj_dim)
+        self.dw5_d2 = nn.Conv1d(
+            proj_dim, proj_dim, kernel_size=5, padding=4, dilation=2, groups=proj_dim
+        )
+        self.pw = nn.Conv1d(proj_dim, proj_dim, kernel_size=1)
+        self.temporal_norm = nn.LayerNorm(proj_dim)
+        self.temporal_drop = nn.Dropout(dropout * 0.25)
+        self.lstm = nn.LSTM(
+            input_size=proj_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=True,
+        )
+
+        out_dim = hidden_dim * 2
+        self.out_norm = nn.LayerNorm(out_dim)
+        self.attn = nn.Sequential(
+            nn.Linear(out_dim, hidden_dim), nn.Tanh(), nn.Linear(hidden_dim, 1)
+        )
+        self.embed = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.LayerNorm(out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.class_head = nn.Linear(out_dim, num_classes)
+        domain_hidden = max(32, hidden_dim // 2)
+        self.domain_head = nn.Sequential(
+            nn.Linear(out_dim, domain_hidden),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(domain_hidden, num_domains),
+        )
+
+    def _unit_bone(self, x):
+        batch, steps, dims = x.shape
+        points = x.reshape(batch, steps, self.n_hands, 21, 3)
+        parent = torch.as_tensor(self.PARENT, dtype=torch.long, device=x.device)
+        bone = points - points[:, :, :, parent, :]
+        norm = torch.linalg.vector_norm(bone, dim=-1, keepdim=True).clamp_min(1e-6)
+        unit = bone / norm
+        unit[:, :, :, 0, :] = 0.0
+        return unit.reshape(batch, steps, dims)
+
+    def encode(self, x):
+        velocity = torch.cat((torch.zeros_like(x[:, :1]), x[:, 1:] - x[:, :-1]), dim=1)
+        acceleration = torch.cat(
+            (torch.zeros_like(velocity[:, :1]), velocity[:, 1:] - velocity[:, :-1]), dim=1
+        )
+        z = self.proj(torch.cat((x, velocity, acceleration, self._unit_bone(x)), dim=-1))
+
+        channels = z.transpose(1, 2)
+        local = torch.nn.functional.gelu(self.dw3(channels))
+        broader = torch.nn.functional.gelu(self.dw5_d2(channels))
+        conv = self.pw(0.5 * (local + broader)).transpose(1, 2)
+        z = self.temporal_norm(z + self.temporal_drop(conv))
+
+        out, _ = self.lstm(z)
+        out = self.out_norm(out)
+        attention = torch.softmax(self.attn(out), dim=1)
+        attention_pool = (out * attention).sum(dim=1)
+        mean_pool = out.mean(dim=1)
+        return self.embed(torch.cat((attention_pool, mean_pool), dim=1))
+
+    def forward(self, x, grl_lambda=0.0, return_domain=False):
+        embedding = self.encode(x)
+        class_logits = self.class_head(embedding)
+        if return_domain:
+            domain_logits = self.domain_head(_e3_grad_reverse(embedding, grl_lambda))
+            return class_logits, domain_logits
+        return class_logits
+
+
+def normalize_e3_hand_sequence(X: np.ndarray) -> np.ndarray:
+    """Chuẩn hóa theo cả sequence, đồng thời giữ trajectory của wrist."""
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 3 or X.shape[1] != E3_SEQ_LEN or X.shape[2] not in E3_VALID_FEATURE_DIMS:
+        raise ValueError(f"Expected (N, {E3_SEQ_LEN}, 63/126), got {X.shape}")
+
+    samples, steps, dims = X.shape
+    hands = dims // 63
+    points = X.reshape(samples, steps, hands, 21, 3).copy()
+    result = np.zeros_like(points, dtype=np.float32)
+    palm_ids = np.array([5, 9, 13, 17], dtype=np.int64)
+
+    for hand_index in range(hands):
+        hand = points[:, :, hand_index]
+        wrist = hand[:, :, 0, :]
+        local = hand - wrist[:, :, None, :]
+        palm_radius = np.linalg.norm(local[:, :, palm_ids, :], axis=-1)
+        frame_scale = np.median(palm_radius, axis=-1)
+        valid = frame_scale > 1e-4
+
+        for sample_index in range(samples):
+            valid_indices = np.flatnonzero(valid[sample_index])
+            if len(valid_indices) == 0:
+                continue
+            anchor = wrist[sample_index, valid_indices[0]].copy()
+            sequence_scale = max(float(np.median(frame_scale[sample_index, valid_indices])), 1e-6)
+            result[sample_index, valid_indices, hand_index, 0, :] = (
+                wrist[sample_index, valid_indices] - anchor
+            ) / sequence_scale
+            result[sample_index, valid_indices, hand_index, 1:, :] = (
+                local[sample_index, valid_indices, 1:, :] / sequence_scale
+            )
+
+    return result.reshape(samples, steps, dims).astype(np.float32)
+
+
+def _e3_time_warp(x: torch.Tensor, gamma: float) -> torch.Tensor:
+    steps = x.shape[-2]
+    u = torch.linspace(0.0, 1.0, steps, dtype=x.dtype, device=x.device)
+    position = u.clamp_min(1e-6).pow(float(gamma)) * (steps - 1)
+    position[0] = 0.0
+    position[-1] = float(steps - 1)
+    left = torch.floor(position).long()
+    right = torch.clamp(left + 1, max=steps - 1)
+    weight = position - left.to(position.dtype)
+    if x.ndim == 2:
+        return x[left] * (1.0 - weight[:, None]) + x[right] * weight[:, None]
+    if x.ndim == 3:
+        return x[:, left] * (1.0 - weight[None, :, None]) + x[:, right] * weight[None, :, None]
+    raise ValueError(f"Unsupported x.ndim={x.ndim}")
+
+
+def _e3_augment_sequence(x: torch.Tensor) -> torch.Tensor:
+    x = x.clone()
+    steps, dims = x.shape
+    hands = dims // 63
+
+    if torch.rand(()) < 0.70:
+        angle = (torch.rand(()) * 2.0 - 1.0) * np.deg2rad(E3_AUG_ROTATE_DEG)
+        cosine, sine = torch.cos(angle), torch.sin(angle)
+        points = x.reshape(steps, hands, 21, 3)
+        xx, yy = points[..., 0].clone(), points[..., 1].clone()
+        points[..., 0] = cosine * xx - sine * yy
+        points[..., 1] = sine * xx + cosine * yy
+        x = points.reshape(steps, dims)
+
+    if torch.rand(()) < 0.80:
+        valid = (x.abs().sum(dim=1, keepdim=True) > 1e-7).to(x.dtype)
+        x = x + torch.randn_like(x) * E3_AUG_JITTER_STD * valid
+
+    if torch.rand(()) < 0.50:
+        points = x.reshape(steps, hands, 21, 3)
+        z_scale = 1.0 + (torch.rand(()) * 2.0 - 1.0) * E3_AUG_Z_SCALE
+        points[..., 2] *= z_scale
+        x = points.reshape(steps, dims)
+
+    if torch.rand(()) < 0.60:
+        gamma = 1.0 + float((torch.rand(()) * 2.0 - 1.0) * E3_AUG_TIME_WARP)
+        x = _e3_time_warp(x, gamma)
+    return x
+
+
+class _E3LandmarkDomainDataset(Dataset):
+    def __init__(self, X, y, domains=None, augment=False):
+        self.X = torch.tensor(np.asarray(X), dtype=torch.float32)
+        self.y = torch.tensor(np.asarray(y), dtype=torch.long)
+        self.domains = (
+            torch.full_like(self.y, -1)
+            if domains is None
+            else torch.tensor(np.asarray(domains), dtype=torch.long)
+        )
+        self.augment = bool(augment)
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, index):
+        x = self.X[index]
+        if self.augment:
+            x = _e3_augment_sequence(x)
+        return x, self.y[index], self.domains[index]
+
+
+def _e3_set_seed(seed=E3_SEED):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+@torch.no_grad()
+def _e3_update_ema(ema_model, model, decay, step):
+    effective_decay = min(float(decay), (1.0 + step) / (10.0 + step))
+    for ema_parameter, parameter in zip(ema_model.parameters(), model.parameters()):
+        ema_parameter.mul_(effective_decay).add_(parameter, alpha=1.0 - effective_decay)
+    for ema_buffer, buffer in zip(ema_model.buffers(), model.buffers()):
+        ema_buffer.copy_(buffer)
+
+
+def _e3_grl_schedule(progress):
+    progress = float(np.clip(progress, 0.0, 1.0))
+    return float(E3_DOMAIN_LAMBDA_MAX * (2.0 / (1.0 + np.exp(-10.0 * progress)) - 1.0))
+
+
+def _e3_select_epoch(inner_results):
+    common_length = min(len(item["history"]["val_acc"]) for item in inner_results)
+    accuracies = np.stack([
+        np.asarray(item["history"]["val_acc"][:common_length], dtype=float)
+        for item in inner_results
+    ])
+    losses = np.stack([
+        np.asarray(item["history"]["val_loss"][:common_length], dtype=float)
+        for item in inner_results
+    ])
+    mean_accuracy = accuracies.mean(axis=0)
+    mean_loss = losses.mean(axis=0)
+    smoothed = mean_accuracy.copy()
+    if common_length >= 3:
+        smoothed[1:-1] = (
+            mean_accuracy[:-2] + mean_accuracy[1:-1] + mean_accuracy[2:]
+        ) / 3.0
+    candidates = np.flatnonzero(np.isclose(smoothed, smoothed.max(), atol=1e-12))
+    best_index = int(candidates[np.argmin(mean_loss[candidates])])
+    return best_index + 1, {
+        "common_len": common_length,
+        "mean_val_acc": mean_accuracy.tolist(),
+        "smooth_mean_val_acc": smoothed.tolist(),
+        "mean_val_loss": mean_loss.tolist(),
+    }
+
+
+class E3Strategy:
+    """
+    E3 — Domain-invariant Motion BiLSTM trên toàn bộ chuỗi 45 frame.
+
+    ``run_cross_subject`` gọi ``set_fold_context`` trước mỗi fold để strategy
+    nhận subject labels phục vụ inner subject-CV và domain-adversarial training.
+    """
+
+    def __init__(self):
+        self._train_groups = None
+        self._test_person = None
+        self.fold_histories = []
+
+    def set_fold_context(self, train_records, test_records, test_person):
+        self._train_groups = np.asarray([record["person"] for record in train_records])
+        self._test_person = str(test_person)
+
+    def prepare_input(self, X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=np.float32)
+        if E3_USE_HAND_NORMALIZATION:
+            return normalize_e3_hand_sequence(X)
+        return X
+
+    def _make_loader(self, X, y, domains, shuffle, seed, augment=False):
+        dataset = _E3LandmarkDomainDataset(X, y, domains=domains, augment=augment)
+        generator = torch.Generator().manual_seed(seed)
+        return DataLoader(
+            dataset,
+            batch_size=E3_BATCH_SIZE,
+            shuffle=shuffle,
+            num_workers=E3_NUM_WORKERS,
+            pin_memory=(E3_DEVICE.type == "cuda"),
+            generator=generator if shuffle else None,
+            persistent_workers=(E3_NUM_WORKERS > 0),
+        )
+
+    @staticmethod
+    def _new_model(input_dim, num_classes, num_domains):
+        return E3DomainInvariantMotionBiLSTM(
+            input_dim=input_dim,
+            proj_dim=E3_PROJ_DIM,
+            hidden_dim=E3_HIDDEN_DIM,
+            num_layers=E3_NUM_LAYERS,
+            num_classes=num_classes,
+            num_domains=num_domains,
+            dropout=E3_DROPOUT,
+        ).to(E3_DEVICE)
+
+    @staticmethod
+    def _class_criterion():
+        return nn.CrossEntropyLoss(label_smoothing=E3_LABEL_SMOOTHING)
+
+    def _train_epoch(self, model, ema_model, loader, optimizer, epoch, max_epochs, global_step):
+        model.train()
+        class_criterion = self._class_criterion()
+        domain_criterion = nn.CrossEntropyLoss()
+        totals = {"loss": 0.0, "class_loss": 0.0, "domain_loss": 0.0,
+                  "correct": 0, "domain_correct": 0, "samples": 0}
+
+        for batch_index, (xb, yb, db) in enumerate(loader):
+            xb = xb.to(E3_DEVICE, non_blocking=True)
+            yb = yb.to(E3_DEVICE, non_blocking=True)
+            db = db.to(E3_DEVICE, non_blocking=True)
+            progress = ((epoch - 1) + (batch_index + 1) / max(len(loader), 1)) / max(max_epochs, 1)
+
+            optimizer.zero_grad(set_to_none=True)
+            logits, domain_logits = model(
+                xb, grl_lambda=_e3_grl_schedule(progress), return_domain=True
+            )
+            class_loss = class_criterion(logits, yb)
+            domain_loss = domain_criterion(domain_logits, db)
+            loss = class_loss + domain_loss
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            global_step += 1
+            _e3_update_ema(ema_model, model, E3_EMA_DECAY, global_step)
+
+            batch_size = xb.size(0)
+            totals["loss"] += loss.item() * batch_size
+            totals["class_loss"] += class_loss.item() * batch_size
+            totals["domain_loss"] += domain_loss.item() * batch_size
+            totals["correct"] += (logits.argmax(1) == yb).sum().item()
+            totals["domain_correct"] += (domain_logits.argmax(1) == db).sum().item()
+            totals["samples"] += batch_size
+
+        count = max(totals["samples"], 1)
+        return {
+            "loss": totals["loss"] / count,
+            "class_loss": totals["class_loss"] / count,
+            "domain_loss": totals["domain_loss"] / count,
+            "acc": totals["correct"] / count,
+            "domain_acc": totals["domain_correct"] / count,
+            "global_step": global_step,
+        }
+
+    def _evaluate(self, model, loader):
+        model.eval()
+        criterion = self._class_criterion()
+        loss_sum = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for xb, yb, _ in loader:
+                xb = xb.to(E3_DEVICE, non_blocking=True)
+                yb = yb.to(E3_DEVICE, non_blocking=True)
+                logits = model(xb)
+                loss_sum += criterion(logits, yb).item() * xb.size(0)
+                correct += (logits.argmax(1) == yb).sum().item()
+                total += xb.size(0)
+        return loss_sum / max(total, 1), correct / max(total, 1)
+
+    def _run_inner_fold(self, X, y, groups, val_person, input_dim, num_classes, seed):
+        validation_indices = np.flatnonzero(groups == val_person)
+        train_indices = np.flatnonzero(groups != val_person)
+        train_people = sorted(np.unique(groups[train_indices]).tolist())
+        domain_map = {person: index for index, person in enumerate(train_people)}
+        train_domains = np.asarray(
+            [domain_map[person] for person in groups[train_indices]], dtype=np.int64
+        )
+        train_loader = self._make_loader(
+            X[train_indices], y[train_indices], train_domains, True, seed, E3_USE_TRAIN_AUGMENT
+        )
+        validation_loader = self._make_loader(
+            X[validation_indices], y[validation_indices], None, False, seed, False
+        )
+
+        _e3_set_seed(seed)
+        model = self._new_model(input_dim, num_classes, len(train_people))
+        ema_model = copy.deepcopy(model).eval()
+        for parameter in ema_model.parameters():
+            parameter.requires_grad_(False)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=E3_LEARNING_RATE, weight_decay=E3_WEIGHT_DECAY
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.5)
+        history = {"train_loss": [], "train_acc": [], "train_domain_acc": [],
+                   "val_loss": [], "val_acc": [], "lr": []}
+        best_epoch, best_accuracy, best_loss = 1, -1.0, float("inf")
+        patience = 0
+        global_step = 0
+
+        for epoch in range(1, E3_INNER_MAX_EPOCHS + 1):
+            train_metrics = self._train_epoch(
+                model, ema_model, train_loader, optimizer,
+                epoch, E3_INNER_MAX_EPOCHS, global_step
+            )
+            global_step = train_metrics["global_step"]
+            validation_loss, validation_accuracy = self._evaluate(ema_model, validation_loader)
+            history["train_loss"].append(train_metrics["loss"])
+            history["train_acc"].append(train_metrics["acc"])
+            history["train_domain_acc"].append(train_metrics["domain_acc"])
+            history["val_loss"].append(validation_loss)
+            history["val_acc"].append(validation_accuracy)
+            history["lr"].append(optimizer.param_groups[0]["lr"])
+
+            improved = validation_accuracy > best_accuracy + 1e-12 or (
+                abs(validation_accuracy - best_accuracy) <= 1e-12
+                and validation_loss < best_loss
+            )
+            if improved:
+                best_epoch, best_accuracy, best_loss = epoch, validation_accuracy, validation_loss
+                patience = 0
+            else:
+                patience += 1
+            scheduler.step()
+            if epoch == 1 or epoch % 10 == 0 or patience >= E3_INNER_PATIENCE:
+                print(
+                    f"    inner val={val_person} epoch={epoch}/{E3_INNER_MAX_EPOCHS} "
+                    f"train_acc={train_metrics['acc']:.3f} val_acc={validation_accuracy:.3f}"
+                )
+            if patience >= E3_INNER_PATIENCE:
+                break
+
+        model.to("cpu")
+        ema_model.to("cpu")
+        del model, ema_model, optimizer, scheduler, train_loader, validation_loader
+        gc.collect()
+        if E3_DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return {
+            "val_person": val_person,
+            "train_people": train_people,
+            "best_epoch": int(best_epoch),
+            "best_val_acc": float(best_accuracy),
+            "best_val_loss_at_best_acc": float(best_loss),
+            "history": history,
+        }
+
+    def train(self, X_train: np.ndarray, y_train: np.ndarray):
+        if self._train_groups is None or len(self._train_groups) != len(X_train):
+            raise RuntimeError(
+                "E3Strategy cần subject labels. Hãy gọi qua run_cross_subject() "
+                "hoặc set_fold_context() trước train()."
+            )
+        X_train = np.asarray(X_train, dtype=np.float32)
+        y_train = np.asarray(y_train)
+        groups = self._train_groups
+        encoder = LabelEncoder()
+        encoded_labels = encoder.fit_transform(y_train)
+        people = sorted(np.unique(groups).tolist())
+        if len(people) < 2:
+            raise ValueError(f"E3 cần ít nhất 2 train subjects, got {people}")
+
+        input_dim = X_train.shape[2]
+        num_classes = len(encoder.classes_)
+        inner_results = []
+        for index, validation_person in enumerate(people):
+            inner_results.append(self._run_inner_fold(
+                X_train, encoded_labels, groups, validation_person,
+                input_dim, num_classes, E3_SEED + 100 * (index + 1)
+            ))
+        final_epochs, epoch_selection = _e3_select_epoch(inner_results)
+        print(
+            f"[E3 test={self._test_person}] inner best epochs="
+            f"{[item['best_epoch'] for item in inner_results]}, selected={final_epochs}"
+        )
+
+        domain_map = {person: index for index, person in enumerate(people)}
+        domains = np.asarray([domain_map[person] for person in groups], dtype=np.int64)
+        final_seed = E3_SEED + 1000
+        _e3_set_seed(final_seed)
+        loader = self._make_loader(
+            X_train, encoded_labels, domains, True, final_seed, E3_USE_TRAIN_AUGMENT
+        )
+        model = self._new_model(input_dim, num_classes, len(people))
+        ema_model = copy.deepcopy(model).eval()
+        for parameter in ema_model.parameters():
+            parameter.requires_grad_(False)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=E3_LEARNING_RATE, weight_decay=E3_WEIGHT_DECAY
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.5)
+        final_history = {"train_loss": [], "train_class_loss": [],
+                         "train_domain_loss": [], "train_acc": [],
+                         "train_domain_acc": [], "lr": []}
+        global_step = 0
+        for epoch in range(1, final_epochs + 1):
+            metrics = self._train_epoch(
+                model, ema_model, loader, optimizer, epoch, final_epochs, global_step
+            )
+            global_step = metrics["global_step"]
+            for key in ("loss", "class_loss", "domain_loss", "acc", "domain_acc"):
+                final_history[f"train_{key}"].append(metrics[key])
+            final_history["lr"].append(optimizer.param_groups[0]["lr"])
+            scheduler.step()
+            if epoch == 1 or epoch % 10 == 0 or epoch == final_epochs:
+                print(
+                    f"[E3 test={self._test_person}] epoch={epoch}/{final_epochs} "
+                    f"loss={metrics['loss']:.4f} acc={metrics['acc']:.3f}"
+                )
+
+        model.to("cpu")
+        del model, optimizer, scheduler, loader
+        gc.collect()
+        ema_model.to(E3_DEVICE).eval()
+        state = {
+            "models": [ema_model],
+            "le": encoder,
+            "inner": inner_results,
+            "epoch_selection": epoch_selection,
+            "final_history": final_history,
+            "final_epochs": final_epochs,
+            "input_dim": input_dim,
+            "outer_train_people": people,
+        }
+        # Chỉ giữ metadata/history; không giữ model của các fold cũ trên GPU.
+        self.fold_histories.append({
+            "test_person": self._test_person,
+            "inner": inner_results,
+            "epoch_selection": epoch_selection,
+            "final_history": final_history,
+            "final_epochs": final_epochs,
+            "outer_train_people": people,
+        })
+        return state
+
+    @staticmethod
+    def _ensemble_logits(models, inputs):
+        logits = []
+        for gamma in E3_TTA_GAMMAS:
+            view = inputs if abs(gamma - 1.0) < 1e-12 else _e3_time_warp(inputs, gamma)
+            logits.extend(model(view) for model in models)
+        return torch.stack(logits, dim=0).mean(dim=0)
+
+    def predict(self, model_state, X_test: np.ndarray) -> np.ndarray:
+        models = model_state["models"]
+        for model in models:
+            model.eval()
+        prediction_ids = []
+        X_test = np.asarray(X_test, dtype=np.float32)
+        with torch.no_grad():
+            for start in range(0, len(X_test), E3_BATCH_SIZE):
+                inputs = torch.tensor(
+                    X_test[start:start + E3_BATCH_SIZE], dtype=torch.float32, device=E3_DEVICE
+                )
+                prediction_ids.append(
+                    self._ensemble_logits(models, inputs).argmax(dim=1).cpu().numpy()
+                )
+        return model_state["le"].inverse_transform(np.concatenate(prediction_ids))
+
+    def measure_latency(self, model_state, X_sample: np.ndarray) -> float:
+        models = model_state["models"]
+        for model in models:
+            model.eval()
+        sample = torch.tensor(X_sample[:1], dtype=torch.float32, device=E3_DEVICE)
+        with torch.no_grad():
+            for _ in range(5):
+                self._ensemble_logits(models, sample)
+        repeats = 30
+        if E3_DEVICE.type == "cuda":
+            torch.cuda.synchronize()
+        start = time.perf_counter()
+        with torch.no_grad():
+            for _ in range(repeats):
+                self._ensemble_logits(models, sample)
+        if E3_DEVICE.type == "cuda":
+            torch.cuda.synchronize()
+        return (time.perf_counter() - start) * 1000.0 / repeats
 
 
 if __name__ == "__main__":
