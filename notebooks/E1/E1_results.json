@@ -1,0 +1,47 @@
+{
+  "experiment": "E1",
+  "description": "MLP frame index=22, wrist-centering và scale-normalization",
+  "configuration": {
+    "frame_index": 22,
+    "epochs": 100,
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "validation_ratio": 0.15,
+    "seed": 42,
+    "classes": 34
+  },
+  "results": [
+    {
+      "test_person": "hau",
+      "train_samples": 480,
+      "test_samples": 160,
+      "accuracy": 0.4375,
+      "latency_ms": 0.07119063998970887
+    },
+    {
+      "test_person": "khoi",
+      "train_samples": 480,
+      "test_samples": 160,
+      "accuracy": 0.5625,
+      "latency_ms": 0.061766990003206956
+    },
+    {
+      "test_person": "tai",
+      "train_samples": 480,
+      "test_samples": 160,
+      "accuracy": 0.40625,
+      "latency_ms": 0.07218067000621886
+    },
+    {
+      "test_person": "vy",
+      "train_samples": 480,
+      "test_samples": 160,
+      "accuracy": 0.59375,
+      "latency_ms": 0.06434743999648163
+    }
+  ],
+  "accuracy_mean": 0.5,
+  "accuracy_std": 0.07967217989988726,
+  "latency_mean_ms": 0.06737143499890408,
+  "latency_std_ms": 0.004423500243072242
+}
