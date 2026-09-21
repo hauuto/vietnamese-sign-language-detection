@@ -1,0 +1,29 @@
+{
+  "experiment": "E3+++",
+  "description": "Domain-Invariant Motion Bi-LSTM, LOSO 4-fold: moi fold train 3 nguoi va test 1 nguoi unseen; hand normalization + motion features + DANN + EMA, single-model deploy, khong TTA.",
+  "results": [
+    {
+      "test_person": "hau",
+      "accuracy": 0.8125,
+      "latency_ms": 2.776491
+    },
+    {
+      "test_person": "khoi",
+      "accuracy": 0.76875,
+      "latency_ms": 2.479448
+    },
+    {
+      "test_person": "tai",
+      "accuracy": 0.725,
+      "latency_ms": 2.83665
+    },
+    {
+      "test_person": "vy",
+      "accuracy": 0.925,
+      "latency_ms": 2.509349
+    }
+  ],
+  "accuracy_mean": 0.8078125,
+  "accuracy_std": 0.07439534910698385,
+  "latency_mean_ms": 2.6504845
+}
