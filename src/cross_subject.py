@@ -104,396 +104,607 @@ def run_cross_subject(records, strategy: ModelStrategy, people=PEOPLE):
           f"latency={np.mean(lats):.2f}ms (±{np.std(lats):.2f}ms)")
     return results
 
-class LSTMClassifier(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int,
-                 num_classes: int, dropout: float = 0.3):
+class AttentionPool(nn.Module):
+    """Soft attention pooling qua trục thời gian."""
+    def __init__(self, hidden_dim):
         super().__init__()
+        self.attn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+
+    def forward(self, lstm_out):
+        # lstm_out: (B, T, H)
+        scores  = self.attn(lstm_out)               # (B, T, 1)
+        weights = torch.softmax(scores, dim=1)      # (B, T, 1)
+        context = (lstm_out * weights).sum(dim=1)   # (B, H)
+        return context
+
+
+class AttentionLSTM(nn.Module):
+    """
+    E2 — LSTM một chiều với attention pooling.
+
+    Input: (B, T, D)  D = 63 hoặc 126 (sau normalize)
+
+    Pipeline:
+      velocity + acceleration → concat → LayerNorm → Linear(proj)
+      → LSTM(uni, layers=2) → AttentionPool + MeanPool → concat
+      → FC(out_dim → out_dim//2, GELU) → Dropout → FC(num_classes)
+
+    Không có: GRL, domain head, EMA, TTA.
+    """
+    def __init__(self, input_dim: int, proj_dim: int, hidden_dim: int,
+                 num_layers: int, num_classes: int, dropout: float = 0.35):
+        super().__init__()
+        feat_dim = input_dim * 3   # pose, velocity (dx), acceleration (ddx)
+
+        self.proj = nn.Sequential(
+            nn.LayerNorm(feat_dim),
+            nn.Linear(feat_dim, proj_dim),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.30),
+        )
+
         self.lstm = nn.LSTM(
-            input_size=input_dim,
+            input_size=proj_dim,
             hidden_size=hidden_dim,
             num_layers=num_layers,
-            batch_first=True,           # input shape: (batch, seq, feature)
+            batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=False,   # E2: một chiều
         )
-        self.fc = nn.Linear(hidden_dim, num_classes)
-        self.dropout = nn.Dropout(dropout)
- 
-    def forward(self, x):
-        # x: (batch, 45, D)
-        out, _ = self.lstm(x)           # out: (batch, 45, hidden_dim)
-        last    = out[:, -1, :]         # lấy bước cuối: (batch, hidden_dim)
-        last    = self.dropout(last)
-        return self.fc(last)            # (batch, num_classes)
+
+        self.out_norm  = nn.LayerNorm(hidden_dim)
+        self.attn_pool = AttentionPool(hidden_dim)
+
+        out_dim = hidden_dim * 2   # attn_pool + mean_pool
+        self.head = nn.Sequential(
+            nn.Linear(out_dim, out_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(out_dim // 2, num_classes),
+        )
+
+    def encode(self, x):
+        dx  = torch.cat((torch.zeros_like(x[:, :1]), x[:, 1:] - x[:, :-1]), dim=1)
+        ddx = torch.cat((torch.zeros_like(dx[:, :1]), dx[:, 1:] - dx[:, :-1]), dim=1)
+        z   = torch.cat((x, dx, ddx), dim=-1)   # (B, T, D*3)
+        z   = self.proj(z)                       # (B, T, proj_dim)
+
+        out, _ = self.lstm(z)                    # (B, T, hidden_dim)
+        out    = self.out_norm(out)
+
+        attn_vec = self.attn_pool(out)           # (B, hidden_dim)
+        mean_vec = out.mean(dim=1)               # (B, hidden_dim)
+        emb      = torch.cat((attn_vec, mean_vec), dim=-1)  # (B, hidden_dim*2)
+        return emb
+
+    def forward(self, x, **kwargs):
+        # **kwargs để tương thích signature gọi từ outer loop
+        return self.head(self.encode(x))
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 import re, time
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split 
-from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import matplotlib
 
-# Siêu tham số — chỉnh ở đây nếu muốn thử nghiệm
-HIDDEN_DIM  = 128
-NUM_LAYERS  = 3
-DROPOUT     = 0.5
-LR          = 1e-4
-EPOCHS      = 1000
-BATCH_SIZE  = 64
-PATIENCE    = 10  
-DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
- 
+PROJ_DIM    = 96
+HIDDEN_DIM  = 96
+NUM_LAYERS  = 2       # 2 layer để có depth, bù cho không có BiLSTM
+DROPOUT     = 0.35
+LR          = 8e-4
+INNER_MAX_EPOCHS = 100
+BATCH_SIZE  = 32
+
+SEQ_LEN = 45
+VALID_FEATURE_DIMS = (63, 126) 
+
+SEED            = 42
+INNER_PATIENCE  = 18
+NUM_WORKERS     = 2
+WEIGHT_DECAY    = 1e-4
+LABEL_SMOOTHING = 0.05
+
+USE_HAND_NORMALIZATION = True
+USE_TRAIN_AUGMENT      = True
+AUG_ROTATE_DEG = 8.0
+AUG_JITTER_STD = 0.007
+AUG_TIME_WARP  = 0.10
+AUG_Z_SCALE    = 0.10
+
+DEVICE       = "cuda" if torch.cuda.is_available() else "cpu"
+ARTIFACT_DIR = Path("E2_artifacts")
+ARTIFACT_DIR.mkdir(exist_ok=True)
+
 print(f"Device: {DEVICE}")
- 
+print(f"Normalization={USE_HAND_NORMALIZATION} | Augment={USE_TRAIN_AUGMENT}")
+print(f"Model: AttentionLSTM (unidirectional) | PROJ={PROJ_DIM} HIDDEN={HIDDEN_DIM} LAYERS={NUM_LAYERS}")
 
-def normalize_landmarks(X):
-    """
-    Chuẩn hóa landmark: dời về wrist + chia theo khoảng cách wrist→MCP ngón giữa.
 
-    X: (N, T, D) với D = 63 (1 tay) hoặc 126 (2 tay)
-       Mỗi tay gồm 21 điểm × 3 tọa độ (x, y, z) xen kẽ.
+def set_seed(seed=SEED):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
-    Trả về: (N, T, D) float32 đã chuẩn hóa.
-    """
-    X_norm = X.copy().astype(np.float32)
-    D = X_norm.shape[-1]
-    num_coords_per_hand = 63  # 21 landmarks × 3
 
-    # Xử lý từng bàn tay
-    for hand_offset in range(0, D, num_coords_per_hand):
-        hand = X_norm[..., hand_offset:hand_offset + num_coords_per_hand]
-        # hand shape: (N, T, 63)
+def normalize_hand_sequence_keep_motion(X: np.ndarray) -> np.ndarray:
+    """Sequence-level wrist/scale normalization, giữ wrist trajectory."""
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 3 or X.shape[1] != SEQ_LEN or X.shape[2] not in VALID_FEATURE_DIMS:
+        raise ValueError(f"Expected (N, {SEQ_LEN}, 63/126), got {X.shape}")
+    N, T, D = X.shape
+    n_hands = D // 63
+    pts = X.reshape(N, T, n_hands, 21, 3).copy()
+    out = np.zeros_like(pts, dtype=np.float32)
+    eps = 1e-6
+    palm_ids = np.array([5, 9, 13, 17], dtype=np.int64)
+    for h in range(n_hands):
+        hand = pts[:, :, h]
+        wrist = hand[:, :, 0, :]
+        local = hand - wrist[:, :, None, :]
+        palm_radius = np.linalg.norm(local[:, :, palm_ids, :], axis=-1)
+        frame_scale = np.median(palm_radius, axis=-1)
+        valid = frame_scale > 1e-4
+        for n in range(N):
+            valid_idx = np.flatnonzero(valid[n])
+            if len(valid_idx) == 0:
+                continue
+            anchor = wrist[n, valid_idx[0]].copy()
+            seq_scale = max(float(np.median(frame_scale[n, valid_idx])), eps)
+            out[n, valid_idx, h, 0, :] = (wrist[n, valid_idx] - anchor) / seq_scale
+            out[n, valid_idx, h, 1:, :] = local[n, valid_idx, 1:, :] / seq_scale
+    return out.reshape(N, T, D).astype(np.float32)
 
-        # Tọa độ wrist (landmark 0): indices 0, 1, 2
-        wrist_x = hand[..., 0:1]  # (N, T, 1)
-        wrist_y = hand[..., 1:2]
-        wrist_z = hand[..., 2:3]
 
-        # Dời gốc về wrist
-        hand[..., 0::3] -= wrist_x
-        hand[..., 1::3] -= wrist_y
-        hand[..., 2::3] -= wrist_z
+def _time_warp_tensor(x: torch.Tensor, gamma: float) -> torch.Tensor:
+    T = x.shape[-2]
+    u = torch.linspace(0.0, 1.0, T, dtype=x.dtype, device=x.device)
+    pos = (u.clamp_min(1e-6).pow(float(gamma))) * (T - 1)
+    pos[0] = 0.0
+    pos[-1] = float(T - 1)
+    left  = torch.floor(pos).long()
+    right = torch.clamp(left + 1, max=T - 1)
+    w     = (pos - left.to(pos.dtype))
+    if x.ndim == 2:
+        return x[left] * (1.0 - w[:, None]) + x[right] * w[:, None]
+    if x.ndim == 3:
+        return x[:, left] * (1.0 - w[None, :, None]) + x[:, right] * w[None, :, None]
+    raise ValueError(f"Unsupported x.ndim={x.ndim}")
 
-        # Tọa độ middle finger MCP (landmark 9): indices 27, 28, 29
-        mcp_x = hand[..., 27:28]
-        mcp_y = hand[..., 28:29]
-        mcp_z = hand[..., 29:30]
 
-        # Khoảng cách wrist → MCP ngón giữa (sau khi đã dời, wrist = 0)
-        dist = np.sqrt(mcp_x**2 + mcp_y**2 + mcp_z**2)
-        dist = np.maximum(dist, 1e-6)  # tránh chia cho 0
+def augment_sequence(x: torch.Tensor) -> torch.Tensor:
+    x = x.clone()
+    T, D = x.shape
+    n_hands = D // 63
+    if torch.rand(()) < 0.70:
+        angle = (torch.rand(()) * 2.0 - 1.0) * np.deg2rad(AUG_ROTATE_DEG)
+        c, s  = torch.cos(angle), torch.sin(angle)
+        pts   = x.reshape(T, n_hands, 21, 3)
+        xx    = pts[..., 0].clone()
+        yy    = pts[..., 1].clone()
+        pts[..., 0] = c * xx - s * yy
+        pts[..., 1] = s * xx + c * yy
+        x = pts.reshape(T, D)
+    if torch.rand(()) < 0.80:
+        frame_valid = (x.abs().sum(dim=1, keepdim=True) > 1e-7).to(x.dtype)
+        x = x + torch.randn_like(x) * AUG_JITTER_STD * frame_valid
+    if torch.rand(()) < 0.50:
+        pts     = x.reshape(T, n_hands, 21, 3)
+        z_scale = 1.0 + (torch.rand(()) * 2.0 - 1.0) * AUG_Z_SCALE
+        pts[..., 2] = pts[..., 2] * z_scale
+        x = pts.reshape(T, D)
+    if torch.rand(()) < 0.60:
+        gamma = 1.0 + float((torch.rand(()) * 2.0 - 1.0) * AUG_TIME_WARP)
+        x = _time_warp_tensor(x, gamma)
 
-        # Chia toàn bộ tọa độ cho dist → scale invariant
-        hand[..., 0::3] /= dist
-        hand[..., 1::3] /= dist
-        hand[..., 2::3] /= dist
+        # 5. Mirror ngang (lật trái↔phải) — xác suất 50%
+    # Đảo dấu tọa độ x của tất cả landmark
+    # Hoạt động đúng cho cả 1 tay (D=63) lẫn 2 tay (D=126)
+    if torch.rand(()) < 0.50:
+        pts = x.reshape(T, n_hands, 21, 3)
+        # Lật x quanh tâm x trung bình của toàn bộ frame hợp lệ
+        frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)  # (T,)
+        if frame_valid.any():
+            x_coords = pts[frame_valid, :, :, 0]  # chỉ lấy frame hợp lệ
+            x_center = x_coords.mean()
+            pts[:, :, :, 0] = 2.0 * x_center - pts[:, :, :, 0]
+        x = pts.reshape(T, D)
+        
+    return x
 
-        X_norm[..., hand_offset:hand_offset + num_coords_per_hand] = hand
 
-    return X_norm
-
-def augment(
-    X,
-    noise_std=0.5,
-    shift_range=0.05,
-    zoom_range=(0.8, 1.1),
-    rotation_range=(-15, 15)
-):
-    """
-    Augmentation cho landmark bàn tay.
-
-    X:
-        (N, T, 63) hoặc (N, T, 126)
-
-    Gồm:
-        1. Gaussian Noise
-        2. Shifting
-        3. Zooming
-        4. Spatial Rotation
-    """
-
-    X_aug = X.copy().astype(np.float32)
-
-    # =========================
-    # 1. GAUSSIAN NOISE
-    # =========================
-    noise = np.random.normal(
-        0,
-        noise_std,
-        X_aug.shape
-    ).astype(np.float32)
-
-    X_aug += noise
-
-    # =========================
-    # 2. SHIFTING
-    # =========================
-    shift_x = np.random.uniform(
-        -shift_range,
-        shift_range,
-        size=(X_aug.shape[0], 1, 1)
-    ).astype(np.float32)
-
-    shift_y = np.random.uniform(
-        -shift_range,
-        shift_range,
-        size=(X_aug.shape[0], 1, 1)
-    ).astype(np.float32)
-
-    X_aug[..., 0::3] += shift_x
-    X_aug[..., 1::3] += shift_y
-
-    # =========================
-    # 3. ZOOMING
-    # =========================
-    zoom = np.random.uniform(
-        zoom_range[0],
-        zoom_range[1],
-        size=(X_aug.shape[0], 1, 1)
-    ).astype(np.float32)
-
-    x = X_aug[..., 0::3]
-    y = X_aug[..., 1::3]
-
-    x_center = np.mean(x, axis=-1, keepdims=True)
-    y_center = np.mean(y, axis=-1, keepdims=True)
-
-    X_aug[..., 0::3] = (
-        (x - x_center) * zoom + x_center
-    )
-
-    X_aug[..., 1::3] = (
-        (y - y_center) * zoom + y_center
-    )
-
-    # =========================
-    # 4. SPATIAL ROTATION
-    # =========================
-    angles = np.random.uniform(
-        rotation_range[0],
-        rotation_range[1],
-        size=X_aug.shape[0]
-    )
-
-    angles = np.deg2rad(angles)
-
-    cos_a = np.cos(angles)[:, None, None]
-    sin_a = np.sin(angles)[:, None, None]
-
-    x = X_aug[..., 0::3]
-    y = X_aug[..., 1::3]
-
-    x_center = np.mean(x, axis=-1, keepdims=True)
-    y_center = np.mean(y, axis=-1, keepdims=True)
-
-    x = x - x_center
-    y = y - y_center
-
-    x_rot = x * cos_a - y * sin_a
-    y_rot = x * sin_a + y * cos_a
-
-    X_aug[..., 0::3] = x_rot + x_center
-    X_aug[..., 1::3] = y_rot + y_center
-
-    return X_aug
-
-class AugmentedDataset(torch.utils.data.Dataset):
-    def __init__(self, X, y, augment_fn=None):
-        self.X = X          # (N, 45, D) float32
-        self.y = y          # (N,) long
-        self.augment_fn = augment_fn
+class LandmarkDomainDataset(Dataset):
+    """Giữ nguyên tên để tương thích _make_loader. Trường d không dùng ở E2."""
+    def __init__(self, X, y, d=None, augment=False):
+        self.X       = torch.tensor(np.asarray(X), dtype=torch.float32)
+        self.y       = torch.tensor(np.asarray(y), dtype=torch.long)
+        self.d       = torch.full_like(self.y, -1) if d is None else torch.tensor(np.asarray(d), dtype=torch.long)
+        self.augment = bool(augment)
 
     def __len__(self):
-        return len(self.X)
+        return len(self.y)
 
     def __getitem__(self, idx):
-        x = self.X[idx]     # (45, D)
-        if self.augment_fn is not None:
-            # augment nhận (1, 45, D), trả (1, 45, D)
-            x = self.augment_fn(x[None])[0]
-        return torch.tensor(x, dtype=torch.float32), self.y[idx]
- 
-class E2Strategy:
-    """
-    E2 — LSTM một chiều trên toàn bộ chuỗi 45 bước (Vỹ).
- 
-    prepare_input: giữ nguyên chuỗi (N, 45, D) — KHÔNG lấy 1 khung như E0/E1.
-    train        : LabelEncoder → TensorDataset → train loop.
-    predict      : argmax trên logits.
-    measure_latency: đo thời gian suy luận 1 mẫu, lặp 100 lần để ổn định.
-    """
- 
-    def prepare_input(self, X: np.ndarray) -> np.ndarray:
-        # E2/E3: giữ nguyên toàn bộ chuỗi (N, 45, D)
-        X = X.astype(np.float32)
-        # Chuẩn hóa landmark trước khi đưa vào model
-        X = normalize_landmarks(X)
-        return X.astype(np.float32)
- 
-    # ------------------------------------------------------------------
-    def train(self, X_train: np.ndarray, y_train: np.ndarray):
-        """
-        Trả về dict chứa model, label_encoder — dùng lại ở predict/latency.
-        """
-        le = LabelEncoder()
-        y_enc = le.fit_transform(y_train)           # string label → int
- 
-        num_classes = len(le.classes_)
-        input_dim   = X_train.shape[2]              # 63 hoặc 126
- 
-        model = LSTMClassifier(
-            input_dim=input_dim,
-            hidden_dim=HIDDEN_DIM,
-            num_layers=NUM_LAYERS,
-            num_classes=num_classes,
-            dropout=DROPOUT,
-        ).to(DEVICE)
+        x = self.X[idx]
+        if self.augment:
+            x = augment_sequence(x)
+        return x, self.y[idx], self.d[idx]
 
-        X_tr, X_val, y_tr, y_val = train_test_split(
-            X_train, y_enc, test_size=0.15, stratify=y_enc, random_state=42
+
+def _select_epoch_from_inner(inner):
+    """Chọn epoch từ mean val acc của 3 inner folds, làm trơn 3 điểm."""
+    common_len = min(len(x["history"]["val_acc"]) for x in inner)
+    acc_mat    = np.stack([np.asarray(x["history"]["val_acc"][:common_len],  dtype=float) for x in inner])
+    loss_mat   = np.stack([np.asarray(x["history"]["val_loss"][:common_len], dtype=float) for x in inner])
+    mean_acc   = acc_mat.mean(axis=0)
+    mean_loss  = loss_mat.mean(axis=0)
+    smooth     = mean_acc.copy()
+    if common_len >= 3:
+        smooth[1:-1] = (mean_acc[:-2] + mean_acc[1:-1] + mean_acc[2:]) / 3.0
+    best_score = smooth.max()
+    candidates = np.flatnonzero(np.isclose(smooth, best_score, atol=1e-12))
+    best_idx   = candidates[np.argmin(mean_loss[candidates])] if len(candidates) > 1 else int(candidates[0])
+    return int(best_idx + 1), {
+        "common_len":           int(common_len),
+        "mean_val_acc":         mean_acc.tolist(),
+        "smooth_mean_val_acc":  smooth.tolist(),
+        "mean_val_loss":        mean_loss.tolist(),
+    }
+
+
+# ============================================================
+# E2LSTMStrategy — interface tương thích với outer LOSO loop
+# ============================================================
+
+class E2LSTMStrategy:
+    def prepare_input(self, X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=np.float32)
+        return normalize_hand_sequence_keep_motion(X) if USE_HAND_NORMALIZATION else X
+
+    def _make_loader(self, X, y, d, shuffle, seed, augment=False):
+        ds        = LandmarkDomainDataset(X, y, d=d, augment=augment)
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        return DataLoader(
+            ds, batch_size=BATCH_SIZE, shuffle=shuffle,
+            num_workers=NUM_WORKERS, pin_memory=(DEVICE == "cuda"),
+            generator=generator if shuffle else None,
+            persistent_workers=(NUM_WORKERS > 0),
         )
 
-        train_dataset = AugmentedDataset(X_tr, torch.tensor(y_tr, dtype=torch.long), augment_fn=augment)
-        val_dataset   = TensorDataset(torch.tensor(X_val, dtype=torch.float32),
-                                       torch.tensor(y_val, dtype=torch.long))
-
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE, shuffle=False)
-
-        # Checkpoint: lưu model có train loss tốt nhất
-        best_val_loss = float("inf")
-        best_weights = None
-        no_improve = 0
- 
-        # Thêm vào hàm train(), sau khi có y_enc
-        from collections import Counter
-        counts = Counter(y_tr)
-        weights = torch.tensor(
-            [1.0 / counts[i] for i in range(num_classes)], dtype=torch.float32
+    def _new_model(self, input_dim, num_classes, num_domains=None):
+        # num_domains giữ trong signature để tương thích call-site, E2 không dùng
+        return AttentionLSTM(
+            input_dim=input_dim, proj_dim=PROJ_DIM, hidden_dim=HIDDEN_DIM,
+            num_layers=NUM_LAYERS, num_classes=num_classes, dropout=DROPOUT,
         ).to(DEVICE)
-        criterion = nn.CrossEntropyLoss(weight=weights)
-        optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-        # cosine annealing để lr giảm dần, tránh dao động cuối
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
- 
-        history = {"loss": [], "acc": [], "val_loss": [], "val_acc": []}
-        # Lưu history của từng fold
-        if not hasattr(self, "all_histories"):
-            self.all_histories = []
 
+    @staticmethod
+    def _class_criterion():
+        return nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
+
+    def _run_train_epoch(self, model, loader, criterion, optimizer):
         model.train()
-        for epoch in range(1, EPOCHS + 1):
-            running_loss, correct, total = 0.0, 0, 0
-            for xb, yb in train_loader:
-                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-                optimizer.zero_grad()
-                logits = model(xb)
-                loss   = criterion(logits, yb)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
- 
-                running_loss += loss.item() * xb.size(0)
-                correct      += (logits.argmax(1) == yb).sum().item()
-                total        += xb.size(0)
- 
-            scheduler.step()
-            epoch_loss = running_loss / total
-            epoch_acc  = correct / total
-            history["loss"].append(epoch_loss)
-            history["acc"].append(epoch_acc)
+        loss_sum, correct, total = 0.0, 0, 0
+        for xb, yb, _ in loader:
+            xb, yb = xb.to(DEVICE, non_blocking=True), yb.to(DEVICE, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss   = criterion(logits, yb)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            loss_sum += loss.item() * xb.size(0)
+            correct  += (logits.argmax(1) == yb).sum().item()
+            total    += xb.size(0)
+        return {
+            "loss":        loss_sum / max(total, 1),
+            "class_loss":  loss_sum / max(total, 1),
+            "domain_loss": 0.0,
+            "acc":         correct  / max(total, 1),
+            "domain_acc":  0.0,
+        }
 
-            model.eval()
+    def _run_eval(self, model, loader, criterion):
+        model.eval()
+        loss_sum, correct, total = 0.0, 0, 0
+        with torch.no_grad():
+            for xb, yb, _ in loader:
+                xb, yb = xb.to(DEVICE, non_blocking=True), yb.to(DEVICE, non_blocking=True)
+                logits  = model(xb)
+                loss_sum += criterion(logits, yb).item() * xb.size(0)
+                correct  += (logits.argmax(1) == yb).sum().item()
+                total    += xb.size(0)
+        return loss_sum / max(total, 1), correct / max(total, 1)
 
-            val_loss = 0.0
-            val_correct = 0
+    def _select_epoch_one_person(self, X, y_enc, groups, val_person,
+                                  input_dim, num_classes, seed):
+        idx_val   = np.flatnonzero(groups == val_person)
+        idx_train = np.flatnonzero(groups != val_person)
+        train_people = sorted(np.unique(groups[idx_train]).tolist())
 
-            with torch.no_grad():
-                for xb, yb in val_loader:
-                    xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+        train_loader = self._make_loader(
+            X[idx_train], y_enc[idx_train], None,
+            shuffle=True, seed=seed, augment=USE_TRAIN_AUGMENT,
+        )
+        val_loader = self._make_loader(
+            X[idx_val], y_enc[idx_val], None,
+            shuffle=False, seed=seed, augment=False,
+        )
 
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
+        set_seed(seed)
+        model     = self._new_model(input_dim, num_classes)
+        criterion = self._class_criterion()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.5)
 
-                    val_loss += loss.item() * xb.size(0)
+        history = {
+            "train_loss": [], "train_class_loss": [], "train_domain_loss": [],
+            "train_acc":  [], "train_domain_acc": [],
+            "val_loss":   [], "val_acc": [], "lr": [],
+        }
+        best_epoch = 1
+        best_acc   = -1.0
+        best_loss_at_best_acc = float("inf")
+        patience   = 0
 
-                    preds = logits.argmax(dim=1)
-                    val_correct += (preds == yb).sum().item()
+        print(f"    inner val={val_person} | train={train_people} | "
+              f"n_train={len(idx_train)} n_val={len(idx_val)}")
 
-            val_loss /= len(X_val)
-            val_acc = val_correct / len(y_val)
+        for epoch in range(1, INNER_MAX_EPOCHS + 1):
+            tr      = self._run_train_epoch(model, train_loader, criterion, optimizer)
+            va_loss, va_acc = self._run_eval(model, val_loader, criterion)
+            lr_now  = optimizer.param_groups[0]["lr"]
 
-            history["val_loss"].append(val_loss)
-            history["val_acc"].append(val_acc)
+            history["train_loss"].append(tr["loss"])
+            history["train_class_loss"].append(tr["class_loss"])
+            history["train_domain_loss"].append(tr["domain_loss"])
+            history["train_acc"].append(tr["acc"])
+            history["train_domain_acc"].append(tr["domain_acc"])
+            history["val_loss"].append(va_loss)
+            history["val_acc"].append(va_acc)
+            history["lr"].append(lr_now)
 
-            model.train()
-
-            if val_loss < best_val_loss - 1e-4:
-                best_val_loss = val_loss
-                best_weights = {
-                    k: v.detach().cpu().clone()
-                    for k, v in model.state_dict().items()
-                }
-                torch.save(best_weights, "E2_best_checkpoint.pt")
-                no_improve = 0
+            improved = (va_acc > best_acc + 1e-12) or (
+                abs(va_acc - best_acc) <= 1e-12 and va_loss < best_loss_at_best_acc
+            )
+            if improved:
+                best_acc              = float(va_acc)
+                best_loss_at_best_acc = float(va_loss)
+                best_epoch            = epoch
+                patience              = 0
             else:
-                no_improve += 1
-                if no_improve >= PATIENCE:
-                    print(f"Early stopping at epoch {epoch} (val_loss={val_loss:.4f})")
-                    break
- 
-            if epoch % 20 == 0 or epoch == 1:
-                print(f"  Epoch {epoch:3d}/{EPOCHS}  loss={epoch_loss:.4f}  acc={epoch_acc:.3f}  val_loss={val_loss:.4f}")
-        
-        # Load lại checkpoint tốt nhất
-        model.load_state_dict(best_weights)
-        model.to(DEVICE)
+                patience += 1
 
-        print(f"Loaded best checkpoint — val_loss={best_val_loss:.4f}")
+            scheduler.step()
 
-        # Lưu history của fold hiện tại
-        self.all_histories.append(history)
-        
-        return {"model": model, "le": le, "history": history, "input_dim": input_dim}
- 
-    # ------------------------------------------------------------------
+            if epoch == 1 or epoch % 10 == 0 or patience >= INNER_PATIENCE:
+                print(f"      epoch {epoch:3d}/{INNER_MAX_EPOCHS} | "
+                      f"train_acc={tr['acc']:.3f} | "
+                      f"val_acc={va_acc:.3f} loss={va_loss:.4f} | "
+                      f"best={best_epoch} ({best_acc:.3f})")
+            if patience >= INNER_PATIENCE:
+                break
+
+        model.to("cpu")
+        del model, optimizer, scheduler, train_loader, val_loader
+        gc.collect()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+
+        return {
+            "val_person":                val_person,
+            "train_people":              train_people,
+            "best_epoch":                int(best_epoch),
+            "best_val_acc":              float(best_acc),
+            "best_val_loss_at_best_acc": float(best_loss_at_best_acc),
+            "history":                   history,
+        }
+
+    def train(self, X_train: np.ndarray, y_train: np.ndarray, groups: np.ndarray,
+              fold_name: str, seed: int = SEED, checkpoint_path=None):
+        X_train = np.asarray(X_train, dtype=np.float32)
+        y_train = np.asarray(y_train)
+        groups  = np.asarray(groups)
+
+        le          = LabelEncoder()
+        y_enc       = le.fit_transform(y_train)
+        num_classes = len(le.classes_)
+        input_dim   = X_train.shape[2]
+        people      = sorted(np.unique(groups).tolist())
+
+        if len(people) != 3:
+            raise ValueError(f"{fold_name}: expected 3 outer-train people, got {people}")
+
+        probe = self._new_model(input_dim, num_classes)
+        print(f"[{fold_name}] model=AttentionLSTM | params={count_parameters(probe):,}")
+        del probe
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+
+        # 1) Inner subject-CV để chọn epoch
+        inner = []
+        for i, val_person in enumerate(people):
+            inner.append(self._select_epoch_one_person(
+                X_train, y_enc, groups, val_person, input_dim, num_classes,
+                seed=seed + 100 * (i + 1),
+            ))
+
+        median_epoch              = max(1, int(round(float(np.median([x["best_epoch"] for x in inner])))))
+        final_epochs, epoch_selection = _select_epoch_from_inner(inner)
+        print(f"[{fold_name}] inner best epochs={[x['best_epoch'] for x in inner]} | "
+              f"median={median_epoch} | mean-curve selected={final_epochs}")
+        print(f"[{fold_name}] inner best accs={[round(x['best_val_acc'], 4) for x in inner]}")
+
+        # 2) Final fit trên đủ 3 người
+        set_seed(seed + 1000)
+        loader    = self._make_loader(X_train, y_enc, None,
+                                      shuffle=True, seed=seed + 1000,
+                                      augment=USE_TRAIN_AUGMENT)
+        model     = self._new_model(input_dim, num_classes)
+        criterion = self._class_criterion()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.5)
+
+        hist = {
+            "train_loss": [], "train_class_loss": [], "train_domain_loss": [],
+            "train_acc":  [], "train_domain_acc": [], "lr": [],
+        }
+        print(f"[{fold_name}] FINAL fit | epochs={final_epochs}")
+        for epoch in range(1, final_epochs + 1):
+            tr = self._run_train_epoch(model, loader, criterion, optimizer)
+            hist["train_loss"].append(tr["loss"])
+            hist["train_class_loss"].append(tr["class_loss"])
+            hist["train_domain_loss"].append(tr["domain_loss"])
+            hist["train_acc"].append(tr["acc"])
+            hist["train_domain_acc"].append(tr["domain_acc"])
+            hist["lr"].append(optimizer.param_groups[0]["lr"])
+            scheduler.step()
+            if epoch == 1 or epoch % 10 == 0 or epoch == final_epochs:
+                print(f"  epoch {epoch:3d}/{final_epochs} | "
+                      f"loss={tr['loss']:.4f} acc={tr['acc']:.3f}")
+
+        model.eval()
+
+        if checkpoint_path is not None:
+            checkpoint_path = Path(checkpoint_path)
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                "model_state_dicts":      [copy.deepcopy(model.state_dict())],
+                "classes":                le.classes_.tolist(),
+                "input_dim":              int(input_dim),
+                "proj_dim":               PROJ_DIM,
+                "hidden_dim":             HIDDEN_DIM,
+                "num_layers":             NUM_LAYERS,
+                "dropout":                DROPOUT,
+                "model_name":             "AttentionLSTM",
+                "inner_results":          [{k: v for k, v in x.items() if k != "history"} for x in inner],
+                "epoch_selection":        epoch_selection,
+                "median_inner_epoch":     int(median_epoch),
+                "final_epochs":           int(final_epochs),
+                "ensemble_size":          1,
+                "ensemble_seeds":         [seed + 1000],
+                "outer_train_people":     people,
+                "use_hand_normalization": bool(USE_HAND_NORMALIZATION),
+                "use_train_augment":      bool(USE_TRAIN_AUGMENT),
+                "label_smoothing":        LABEL_SMOOTHING,
+                "weight_decay":           WEIGHT_DECAY,
+            }, checkpoint_path)
+
+        del optimizer, scheduler, loader
+        gc.collect()
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+
+        return {
+            "models":             [model],
+            "le":                 le,
+            "inner":              inner,
+            "epoch_selection":    epoch_selection,
+            "median_inner_epoch": median_epoch,
+            "final_histories":    [hist],
+            "input_dim":          input_dim,
+            "final_epochs":       final_epochs,
+            "ensemble_size":      1,
+            "ensemble_seeds":     [seed + 1000],
+            "final_train_size":   len(X_train),
+            "outer_train_people": people,
+        }
+
     def predict(self, model_state, X_test: np.ndarray) -> np.ndarray:
-        model = model_state["model"]
-        le    = model_state["le"]
-        model.eval()
+        models = model_state["models"]
+        le     = model_state["le"]
+        for m in models:
+            m.eval()
+
+        X_test = np.asarray(X_test, dtype=np.float32)
+        pred_ids = []
+
         with torch.no_grad():
-            X_t    = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
-            logits = model(X_t)
-            preds  = logits.argmax(dim=1).cpu().numpy()
-        return le.inverse_transform(preds)             # trả về string label
- 
-    # ------------------------------------------------------------------
+            for start in range(0, len(X_test), BATCH_SIZE):
+                xb = torch.tensor(
+                    X_test[start:start + BATCH_SIZE],
+                    dtype=torch.float32, device=DEVICE
+                )  # (B, T, D)
+
+                # --- TTA mirror: tạo bản lật ngang của cả batch ---
+                T, D = xb.shape[1], xb.shape[2]
+                n_hands = D // 63
+                pts = xb.reshape(xb.size(0), T, n_hands, 21, 3).clone()
+
+                # Tính x_center từ frame hợp lệ của từng sample
+                frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)  # (B, T)
+                xb_mirror = pts.clone()
+                for b in range(xb.size(0)):
+                    valid_frames = frame_valid[b]
+                    if valid_frames.any():
+                        x_coords = pts[b, valid_frames, :, :, 0]
+                        x_center = x_coords.mean()
+                        xb_mirror[b, :, :, :, 0] = 2.0 * x_center - pts[b, :, :, :, 0]
+                xb_mirror = xb_mirror.reshape(xb.size(0), T, D)
+
+                # --- Forward cả 2 bản, trung bình xác suất ---
+                logits_orig   = models[0](xb)           # (B, num_classes)
+                logits_mirror = models[0](xb_mirror)    # (B, num_classes)
+
+                probs_orig   = torch.softmax(logits_orig,   dim=1)
+                probs_mirror = torch.softmax(logits_mirror, dim=1)
+                probs_avg    = (probs_orig + probs_mirror) / 2.0  # (B, num_classes)
+
+                pred_ids.append(probs_avg.argmax(dim=1).cpu().numpy())
+
+        return le.inverse_transform(np.concatenate(pred_ids))
+
     def measure_latency(self, model_state, X_sample: np.ndarray) -> float:
-        """Đo latency trung bình cho 1 mẫu (ms), lặp 100 lần để ổn định."""
-        model = model_state["model"]
+        model = model_state["models"][0]
         model.eval()
-        x = torch.tensor(X_sample, dtype=torch.float32).to(DEVICE)
- 
-        # warmup
+
+        x = torch.tensor(X_sample[:1], dtype=torch.float32, device=DEVICE)
+
+        # Tạo bản mirror mẫu đo
+        T, D = x.shape[1], x.shape[2]
+        n_hands = D // 63
+        pts = x.reshape(1, T, n_hands, 21, 3).clone()
+        frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)[0]
+        if frame_valid.any():
+            x_center = pts[0, frame_valid, :, :, 0].mean()
+            pts[0, :, :, :, 0] = 2.0 * x_center - pts[0, :, :, :, 0]
+        x_mirror = pts.reshape(1, T, D)
+
         with torch.no_grad():
-            for _ in range(10):
+            for _ in range(5):  # warmup
                 model(x)
- 
-        # đo chính thức
-        N = 100
+                model(x_mirror)
+
+        N = 30
         if DEVICE == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
         with torch.no_grad():
             for _ in range(N):
-                model(x)
+                p1 = torch.softmax(model(x), dim=1)
+                p2 = torch.softmax(model(x_mirror), dim=1)
+                _ = (p1 + p2) / 2.0
         if DEVICE == "cuda":
             torch.cuda.synchronize()
-        elapsed_ms = (time.perf_counter() - t0) * 1000 / N
-        return elapsed_ms
+        return (time.perf_counter() - t0) * 1000.0 / N
+
 # ==================== VÍ DỤ CẮM STRATEGY — MỖI BẠN TỰ VIẾT PHẦN NÀY ====================
 # class MyStrategy:
 #     def prepare_input(self, X):
