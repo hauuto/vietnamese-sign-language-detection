@@ -1,0 +1,29 @@
+{
+  "protocol": "4-fold Leave-One-Subject-Out (each outer fold: 3 train subjects, 1 completely unseen test subject)",
+  "num_folds": 4,
+  "people": [
+    "hau",
+    "khoi",
+    "tai",
+    "vy"
+  ],
+  "cv_mean_accuracy": 0.690625,
+  "cv_std_accuracy": 0.06931585316505885,
+  "cv_mean_accuracy_percent": 69.0625,
+  "cv_std_accuracy_percent": 6.931585316505886,
+  "cv_mean_macro_f1": 0.661007146802084,
+  "cv_std_macro_f1": 0.07575364799183572,
+  "cv_mean_macro_f1_percent": 66.1007146802084,
+  "cv_std_macro_f1_percent": 7.575364799183572,
+  "pooled_oof_accuracy": 0.690625,
+  "pooled_oof_accuracy_percent": 69.0625,
+  "pooled_oof_macro_f1": 0.689746461631111,
+  "pooled_oof_macro_f1_percent": 68.9746461631111,
+  "best_fold_posthoc": 4,
+  "best_fold_test_person": "vy",
+  "best_fold_accuracy": 0.75625,
+  "best_fold_macro_f1": 0.7437369003545474,
+  "best_fold_checkpoint": "BEST_FOLD_BY_TEST.pt",
+  "best_fold_warning": "Best fold is selected after seeing outer-test scores; do not report it as overall CV accuracy.",
+  "outer_test_used_for_epoch_selection": false
+}
