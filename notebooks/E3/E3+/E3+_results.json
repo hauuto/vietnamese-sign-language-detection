@@ -4,26 +4,38 @@
   "results": [
     {
       "test_person": "hau",
-      "accuracy": 0.79375,
-      "latency_ms": 2.386732
+      "accuracy": 0.825,
+      "macro_f1": 0.804296,
+      "selected_epochs": 23,
+      "latency_ms": 4.492624
     },
     {
       "test_person": "khoi",
-      "accuracy": 0.7,
-      "latency_ms": 2.322549
+      "accuracy": 0.7375,
+      "macro_f1": 0.750883,
+      "selected_epochs": 26,
+      "latency_ms": 4.740589
     },
     {
       "test_person": "tai",
       "accuracy": 0.69375,
-      "latency_ms": 2.170462
+      "macro_f1": 0.695444,
+      "selected_epochs": 30,
+      "latency_ms": 4.776611
     },
     {
       "test_person": "vy",
-      "accuracy": 0.89375,
-      "latency_ms": 2.199398
+      "accuracy": 0.875,
+      "macro_f1": 0.873026,
+      "selected_epochs": 23,
+      "latency_ms": 4.671204
     }
   ],
-  "accuracy_mean": 0.7703125,
-  "accuracy_std": 0.0941484587854027,
-  "latency_mean_ms": 2.26978525
+  "accuracy_mean": 0.782813,
+  "accuracy_std": 0.082186,
+  "macro_f1_mean": 0.780912,
+  "macro_f1_std": 0.075803,
+  "pooled_oof_accuracy": 0.782813,
+  "pooled_oof_macro_f1": 0.790175,
+  "latency_mean_ms": 4.670257
 }
