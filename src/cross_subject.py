@@ -104,6 +104,9 @@ def run_cross_subject(records, strategy: ModelStrategy, people=PEOPLE):
           f"latency={np.mean(lats):.2f}ms (±{np.std(lats):.2f}ms)")
     return results
 
+#================
+# E2
+#================
 class AttentionPool(nn.Module):
     """Soft attention pooling qua trục thời gian."""
     def __init__(self, hidden_dim):
@@ -313,38 +316,83 @@ def augment_sequence(x: torch.Tensor) -> torch.Tensor:
         gamma = 1.0 + float((torch.rand(()) * 2.0 - 1.0) * AUG_TIME_WARP)
         x = _time_warp_tensor(x, gamma)
 
-        # 5. Mirror ngang (lật trái↔phải) — xác suất 50%
-    # Đảo dấu tọa độ x của tất cả landmark
-    # Hoạt động đúng cho cả 1 tay (D=63) lẫn 2 tay (D=126)
-    if torch.rand(()) < 0.50:
-        pts = x.reshape(T, n_hands, 21, 3)
-        # Lật x quanh tâm x trung bình của toàn bộ frame hợp lệ
-        frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)  # (T,)
-        if frame_valid.any():
-            x_coords = pts[frame_valid, :, :, 0]  # chỉ lấy frame hợp lệ
-            x_center = x_coords.mean()
-            pts[:, :, :, 0] = 2.0 * x_center - pts[:, :, :, 0]
-        x = pts.reshape(T, D)
-        
     return x
 
 
 class LandmarkDomainDataset(Dataset):
-    """Giữ nguyên tên để tương thích _make_loader. Trường d không dùng ở E2."""
+    """
+    Dataset cho E2.
+
+    Khi augment=True:
+        mỗi sample được nhân đôi cố định:
+        - idx = 0 ... N-1       : bản gốc
+        - idx = N ... 2N-1     : bản mirror
+
+    Mirror sử dụng:
+        x' = -x
+    """
+
     def __init__(self, X, y, d=None, augment=False):
-        self.X       = torch.tensor(np.asarray(X), dtype=torch.float32)
-        self.y       = torch.tensor(np.asarray(y), dtype=torch.long)
-        self.d       = torch.full_like(self.y, -1) if d is None else torch.tensor(np.asarray(d), dtype=torch.long)
+        self.X = torch.tensor(
+            np.asarray(X),
+            dtype=torch.float32
+        )
+
+        self.y = torch.tensor(
+            np.asarray(y),
+            dtype=torch.long
+        )
+
+        self.d = (
+            torch.full_like(self.y, -1)
+            if d is None
+            else torch.tensor(
+                np.asarray(d),
+                dtype=torch.long
+            )
+        )
+
         self.augment = bool(augment)
 
     def __len__(self):
+        if self.augment:
+            return len(self.y) * 2
+
         return len(self.y)
 
     def __getitem__(self, idx):
-        x = self.X[idx]
+
+        N = len(self.y)
+
+        # Xác định sample gốc và có phải bản mirror không
+        if self.augment and idx >= N:
+            base_idx = idx - N
+            is_mirror = True
+        else:
+            base_idx = idx
+            is_mirror = False
+
+        x = self.X[base_idx].clone()
+
+        # Random augmentation khác
         if self.augment:
             x = augment_sequence(x)
-        return x, self.y[idx], self.d[idx]
+
+        # Mirror cố định
+        # x' = -x
+        if is_mirror:
+            pts = x.reshape(
+                x.shape[0],
+                x.shape[1] // 63,
+                21,
+                3
+            )
+
+            pts[..., 0] = -pts[..., 0]
+
+            x = pts.reshape(x.shape[0], x.shape[1])
+
+        return x, self.y[base_idx], self.d[base_idx]
 
 
 def _select_epoch_from_inner(inner):
@@ -630,6 +678,7 @@ class E2LSTMStrategy:
     def predict(self, model_state, X_test: np.ndarray) -> np.ndarray:
         models = model_state["models"]
         le     = model_state["le"]
+
         for m in models:
             m.eval()
 
@@ -638,71 +687,103 @@ class E2LSTMStrategy:
 
         with torch.no_grad():
             for start in range(0, len(X_test), BATCH_SIZE):
+
                 xb = torch.tensor(
                     X_test[start:start + BATCH_SIZE],
-                    dtype=torch.float32, device=DEVICE
+                    dtype=torch.float32,
+                    device=DEVICE
                 )  # (B, T, D)
 
-                # --- TTA mirror: tạo bản lật ngang của cả batch ---
-                T, D = xb.shape[1], xb.shape[2]
+                # TTA MIRROR
+                # Mirror: x' = -x
+
+                B, T, D = xb.shape
                 n_hands = D // 63
-                pts = xb.reshape(xb.size(0), T, n_hands, 21, 3).clone()
 
-                # Tính x_center từ frame hợp lệ của từng sample
-                frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)  # (B, T)
-                xb_mirror = pts.clone()
-                for b in range(xb.size(0)):
-                    valid_frames = frame_valid[b]
-                    if valid_frames.any():
-                        x_coords = pts[b, valid_frames, :, :, 0]
-                        x_center = x_coords.mean()
-                        xb_mirror[b, :, :, :, 0] = 2.0 * x_center - pts[b, :, :, :, 0]
-                xb_mirror = xb_mirror.reshape(xb.size(0), T, D)
+                pts = xb.reshape(B,T,n_hands,21,3).clone()
 
-                # --- Forward cả 2 bản, trung bình xác suất ---
-                logits_orig   = models[0](xb)           # (B, num_classes)
-                logits_mirror = models[0](xb_mirror)    # (B, num_classes)
+                # Lật ngang: đổi dấu tọa độ X
+                pts[..., 0] = -pts[..., 0]
 
-                probs_orig   = torch.softmax(logits_orig,   dim=1)
-                probs_mirror = torch.softmax(logits_mirror, dim=1)
-                probs_avg    = (probs_orig + probs_mirror) / 2.0  # (B, num_classes)
+                xb_mirror = pts.reshape(B,T,D)
 
-                pred_ids.append(probs_avg.argmax(dim=1).cpu().numpy())
+                # Forward bản gốc và bản mirror
+                logits_orig = models[0](xb)
+                logits_mirror = models[0](xb_mirror)
 
-        return le.inverse_transform(np.concatenate(pred_ids))
+                # TTA: trung bình xác suất
+                probs_orig = torch.softmax(
+                    logits_orig,
+                    dim=1
+                )
+
+                probs_mirror = torch.softmax(
+                    logits_mirror,
+                    dim=1
+                )
+
+                probs_avg = (
+                    probs_orig + probs_mirror
+                ) / 2.0
+
+                pred_ids.append(
+                    probs_avg.argmax(dim=1).cpu().numpy()
+                )
+
+        return le.inverse_transform(
+            np.concatenate(pred_ids)
+        )
 
     def measure_latency(self, model_state, X_sample: np.ndarray) -> float:
         model = model_state["models"][0]
         model.eval()
 
-        x = torch.tensor(X_sample[:1], dtype=torch.float32, device=DEVICE)
+        x = torch.tensor(
+            X_sample[:1],
+            dtype=torch.float32,
+            device=DEVICE
+        )
 
-        # Tạo bản mirror mẫu đo
+    # Tạo bản mirror cho TTA: x' = -x
         T, D = x.shape[1], x.shape[2]
         n_hands = D // 63
-        pts = x.reshape(1, T, n_hands, 21, 3).clone()
-        frame_valid = (pts.abs().sum(dim=(-1, -2, -3)) > 1e-7)[0]
-        if frame_valid.any():
-            x_center = pts[0, frame_valid, :, :, 0].mean()
-            pts[0, :, :, :, 0] = 2.0 * x_center - pts[0, :, :, :, 0]
-        x_mirror = pts.reshape(1, T, D)
 
+        pts = x.reshape(1,T,n_hands,21,3).clone()
+
+        # Đổi dấu tọa độ X
+        pts[..., 0] = -pts[..., 0]
+
+        x_mirror = pts.reshape(
+            1,
+            T,
+            D
+        )
+
+        # Warm-up
         with torch.no_grad():
-            for _ in range(5):  # warmup
+            for _ in range(5):
                 model(x)
                 model(x_mirror)
 
+        # Measure latency
         N = 30
+
         if DEVICE == "cuda":
             torch.cuda.synchronize()
+
         t0 = time.perf_counter()
+
         with torch.no_grad():
             for _ in range(N):
                 p1 = torch.softmax(model(x), dim=1)
                 p2 = torch.softmax(model(x_mirror), dim=1)
+
+                # TTA: lấy trung bình prediction
                 _ = (p1 + p2) / 2.0
+
         if DEVICE == "cuda":
             torch.cuda.synchronize()
+
         return (time.perf_counter() - t0) * 1000.0 / N
 
 # ==================== VÍ DỤ CẮM STRATEGY — MỖI BẠN TỰ VIẾT PHẦN NÀY ====================
