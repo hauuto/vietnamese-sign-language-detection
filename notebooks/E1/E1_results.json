@@ -2,6 +2,14 @@
   "experiment": "E1",
   "description": "MLP frame index=22, wrist-centering, scale-normalization, horizontal flip train/test",
   "configuration": {
+    "tta_aggregation": "mean_softmax",
+    "flip_formula": "-x after normalization; preserve missing hands as zero",
+    "train_copies_per_sample": 2,
+    "latency_device": "cuda",
+    "latency_batch_size": 1,
+    "latency_forward_passes": 2,
+    "latency_warmup_iterations": 20,
+    "latency_iterations": 100,
     "frame_index": 22,
     "horizontal_flip_train": true,
     "horizontal_flip_test_tta": true,
@@ -18,32 +26,38 @@
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.475,
-      "latency_ms": 0.13976600000376038
+      "macro_f1": 0.4732118035751254,
+      "latency_ms": 0.45975720000171805
     },
     {
       "test_person": "khoi",
       "train_samples": 480,
       "test_samples": 160,
-      "accuracy": 0.60625,
-      "latency_ms": 0.13717454000016005
+      "accuracy": 0.6,
+      "macro_f1": 0.5918479204378859,
+      "latency_ms": 0.49853945999757343
     },
     {
       "test_person": "tai",
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.4375,
-      "latency_ms": 0.15788357999838354
+      "macro_f1": 0.4079745417980712,
+      "latency_ms": 0.48898769999993874
     },
     {
       "test_person": "vy",
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.6125,
-      "latency_ms": 0.13405303999945772
+      "macro_f1": 0.6286205305067197,
+      "latency_ms": 0.47678789000201505
     }
   ],
-  "accuracy_mean": 0.5328124999999999,
-  "accuracy_std": 0.07773339352395468,
-  "latency_mean_ms": 0.14221929000044042,
-  "latency_std_ms": 0.00926722389110339
+  "accuracy_mean": 0.53125,
+  "accuracy_std": 0.08809322713277491,
+  "macro_f1_mean": 0.5254136990794506,
+  "macro_f1_std": 0.10260303663141651,
+  "latency_mean_ms": 0.4810180625003113,
+  "latency_std_ms": 0.016737514009772206
 }
