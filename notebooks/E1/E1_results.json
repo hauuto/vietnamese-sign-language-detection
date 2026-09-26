@@ -26,32 +26,38 @@
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.475,
-      "latency_ms": 0.4213602500004754
+      "macro_f1": 0.4732118035751254,
+      "latency_ms": 0.45975720000171805
     },
     {
       "test_person": "khoi",
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.6,
-      "latency_ms": 0.48201780000454164
+      "macro_f1": 0.5918479204378859,
+      "latency_ms": 0.49853945999757343
     },
     {
       "test_person": "tai",
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.4375,
-      "latency_ms": 0.45058168000650767
+      "macro_f1": 0.4079745417980712,
+      "latency_ms": 0.48898769999993874
     },
     {
       "test_person": "vy",
       "train_samples": 480,
       "test_samples": 160,
       "accuracy": 0.6125,
-      "latency_ms": 0.5469287700015002
+      "macro_f1": 0.6286205305067197,
+      "latency_ms": 0.47678789000201505
     }
   ],
   "accuracy_mean": 0.53125,
-  "accuracy_std": 0.07629097259833566,
-  "latency_mean_ms": 0.4752221250032562,
-  "latency_std_ms": 0.04662691616459387
+  "accuracy_std": 0.08809322713277491,
+  "macro_f1_mean": 0.5254136990794506,
+  "macro_f1_std": 0.10260303663141651,
+  "latency_mean_ms": 0.4810180625003113,
+  "latency_std_ms": 0.016737514009772206
 }
