@@ -1,0 +1,29 @@
+{
+  "experiment": "E3",
+  "description": "Attention Bi-LSTM, LOSO 4-fold: moi fold train 3 nguoi va test 1 nguoi unseen; giu cau hinh E2, doi LSTM sang bidirectional; hand normalization + pose/velocity/acceleration + attention pooling; danh gia voi TTA lat ngang (trung binh softmax cua ban goc va ban lat), latency gom 2 luot forward.",
+  "results": [
+    {
+      "test_person": "hau",
+      "accuracy": 0.61875,
+      "latency_ms": 2.020665
+    },
+    {
+      "test_person": "khoi",
+      "accuracy": 0.60625,
+      "latency_ms": 2.11128
+    },
+    {
+      "test_person": "tai",
+      "accuracy": 0.56875,
+      "latency_ms": 2.210538
+    },
+    {
+      "test_person": "vy",
+      "accuracy": 0.8125,
+      "latency_ms": 2.312082
+    }
+  ],
+  "accuracy_mean": 0.6515625,
+  "accuracy_std": 0.109375,
+  "latency_mean_ms": 2.16364125
+}
