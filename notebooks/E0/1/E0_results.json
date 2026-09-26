@@ -1,0 +1,38 @@
+{
+  "experiment": "E0",
+  "description": "MLP tren landmark tho, khung co dinh index=22, khong chuan hoa toa do, flip augmentation (1-x) + TTA trung binh softmax",
+  "protocol": {
+    "frame_index": 22,
+    "val_ratio": 0.15,
+    "seed": "42 + fold_index",
+    "horizontal_flip_train": "deterministic pair (original + mirrored), split before flip",
+    "tta": "mean softmax of original and mirrored",
+    "latency": "CPU, batch 1, 2 forwards (TTA), warmup 10, mean of 100"
+  },
+  "results": [
+    {
+      "test_person": "hau",
+      "accuracy": 0.40625,
+      "latency_ms": 0.20870010999715305
+    },
+    {
+      "test_person": "khoi",
+      "accuracy": 0.5,
+      "latency_ms": 0.23591162999935023
+    },
+    {
+      "test_person": "tai",
+      "accuracy": 0.35625,
+      "latency_ms": 0.20855552999648808
+    },
+    {
+      "test_person": "vy",
+      "accuracy": 0.36875,
+      "latency_ms": 0.21701529000154096
+    }
+  ],
+  "accuracy_mean": 0.4078125,
+  "accuracy_std": 0.0563150665341878,
+  "latency_mean_ms": 0.21754563999863308,
+  "latency_std_ms": 0.011142893909164809
+}
