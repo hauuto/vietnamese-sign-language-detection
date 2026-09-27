@@ -1,0 +1,319 @@
+{
+  "R0": {
+    "run": "R0",
+    "config": {
+      "epochs": 100,
+      "zscore": false,
+      "ensemble": 1,
+      "aug": false
+    },
+    "folds": [
+      {
+        "test_person": "hau",
+        "accuracy": 0.40625,
+        "macro_f1": 0.3919208532338318,
+        "latency_ms": 0.524297350002314,
+        "best_epochs": [
+          87
+        ]
+      },
+      {
+        "test_person": "khoi",
+        "accuracy": 0.5,
+        "macro_f1": 0.47840416023807025,
+        "latency_ms": 0.5505079000008095,
+        "best_epochs": [
+          87
+        ]
+      },
+      {
+        "test_person": "tai",
+        "accuracy": 0.35625,
+        "macro_f1": 0.328098698686934,
+        "latency_ms": 0.8571982399999456,
+        "best_epochs": [
+          91
+        ]
+      },
+      {
+        "test_person": "vy",
+        "accuracy": 0.36875,
+        "macro_f1": 0.3369290839879075,
+        "latency_ms": 0.5465721200002349,
+        "best_epochs": [
+          86
+        ]
+      }
+    ],
+    "accuracy_mean": 0.4078125,
+    "accuracy_std": 0.06502703764589002,
+    "macro_f1_mean": 0.38383819903668587,
+    "macro_f1_std": 0.0690782341279603,
+    "latency_mean_ms": 0.619643902500826,
+    "latency_std_ms": 0.15878948388510397,
+    "latency_device": "cuda",
+    "std": "sample std across folds (ddof=1)",
+    "pooled_oof_accuracy": 0.4078125,
+    "pooled_oof_macro_f1": 0.4068861081874092
+  },
+  "R1": {
+    "run": "R1",
+    "config": {
+      "epochs": 300,
+      "zscore": false,
+      "ensemble": 1,
+      "aug": false
+    },
+    "folds": [
+      {
+        "test_person": "hau",
+        "accuracy": 0.40625,
+        "macro_f1": 0.3919208532338318,
+        "latency_ms": 0.564196759999902,
+        "best_epochs": [
+          87
+        ]
+      },
+      {
+        "test_person": "khoi",
+        "accuracy": 0.525,
+        "macro_f1": 0.5188394938394938,
+        "latency_ms": 0.5396541100026297,
+        "best_epochs": [
+          139
+        ]
+      },
+      {
+        "test_person": "tai",
+        "accuracy": 0.36875,
+        "macro_f1": 0.33290686755031573,
+        "latency_ms": 0.5187349599987101,
+        "best_epochs": [
+          126
+        ]
+      },
+      {
+        "test_person": "vy",
+        "accuracy": 0.36875,
+        "macro_f1": 0.3369290839879075,
+        "latency_ms": 0.5433834400014348,
+        "best_epochs": [
+          86
+        ]
+      }
+    ],
+    "accuracy_mean": 0.41718750000000004,
+    "accuracy_std": 0.07401699551454381,
+    "macro_f1_mean": 0.39514907465288723,
+    "macro_f1_std": 0.08674368539960824,
+    "latency_mean_ms": 0.5414923175006692,
+    "latency_std_ms": 0.018622069172460353,
+    "latency_device": "cuda",
+    "std": "sample std across folds (ddof=1)",
+    "pooled_oof_accuracy": 0.4171875,
+    "pooled_oof_macro_f1": 0.4173299672712184
+  },
+  "R2": {
+    "run": "R2",
+    "config": {
+      "epochs": 300,
+      "zscore": true,
+      "ensemble": 1,
+      "aug": false
+    },
+    "folds": [
+      {
+        "test_person": "hau",
+        "accuracy": 0.4625,
+        "macro_f1": 0.4513626895979837,
+        "latency_ms": 0.611349809999524,
+        "best_epochs": [
+          27
+        ]
+      },
+      {
+        "test_person": "khoi",
+        "accuracy": 0.5625,
+        "macro_f1": 0.543270944741533,
+        "latency_ms": 0.6207119800023975,
+        "best_epochs": [
+          72
+        ]
+      },
+      {
+        "test_person": "tai",
+        "accuracy": 0.45,
+        "macro_f1": 0.4227465345112404,
+        "latency_ms": 0.6037251599985893,
+        "best_epochs": [
+          73
+        ]
+      },
+      {
+        "test_person": "vy",
+        "accuracy": 0.58125,
+        "macro_f1": 0.5849625048154461,
+        "latency_ms": 0.5686703499986834,
+        "best_epochs": [
+          81
+        ]
+      }
+    ],
+    "accuracy_mean": 0.5140625,
+    "accuracy_std": 0.06738705829014946,
+    "macro_f1_mean": 0.5005856684165508,
+    "macro_f1_std": 0.0762087391019516,
+    "latency_mean_ms": 0.6011143249997986,
+    "latency_std_ms": 0.022717549809522394,
+    "latency_device": "cuda",
+    "std": "sample std across folds (ddof=1)",
+    "pooled_oof_accuracy": 0.5140625,
+    "pooled_oof_macro_f1": 0.5256935435327345
+  },
+  "R3": {
+    "run": "R3",
+    "config": {
+      "epochs": 300,
+      "zscore": true,
+      "ensemble": 5,
+      "aug": false
+    },
+    "folds": [
+      {
+        "test_person": "hau",
+        "accuracy": 0.44375,
+        "macro_f1": 0.41535160821493,
+        "latency_ms": 2.4359449000024824,
+        "best_epochs": [
+          27,
+          29,
+          46,
+          32,
+          44
+        ]
+      },
+      {
+        "test_person": "khoi",
+        "accuracy": 0.525,
+        "macro_f1": 0.5098680731033671,
+        "latency_ms": 2.5608737699894846,
+        "best_epochs": [
+          72,
+          60,
+          83,
+          59,
+          44
+        ]
+      },
+      {
+        "test_person": "tai",
+        "accuracy": 0.4375,
+        "macro_f1": 0.4194168576521518,
+        "latency_ms": 2.771233469998151,
+        "best_epochs": [
+          73,
+          64,
+          74,
+          15,
+          57
+        ]
+      },
+      {
+        "test_person": "vy",
+        "accuracy": 0.56875,
+        "macro_f1": 0.5760206390464995,
+        "latency_ms": 2.5423154200018416,
+        "best_epochs": [
+          81,
+          51,
+          54,
+          29,
+          48
+        ]
+      }
+    ],
+    "accuracy_mean": 0.49375,
+    "accuracy_std": 0.0639417052217617,
+    "macro_f1_mean": 0.4801642945042371,
+    "macro_f1_std": 0.07737719009330263,
+    "latency_mean_ms": 2.57759188999799,
+    "latency_std_ms": 0.14033870474884938,
+    "latency_device": "cuda",
+    "std": "sample std across folds (ddof=1)",
+    "pooled_oof_accuracy": 0.49375,
+    "pooled_oof_macro_f1": 0.49804802395734643
+  },
+  "R4": {
+    "run": "R4",
+    "config": {
+      "epochs": 300,
+      "zscore": true,
+      "ensemble": 5,
+      "aug": true
+    },
+    "folds": [
+      {
+        "test_person": "hau",
+        "accuracy": 0.4625,
+        "macro_f1": 0.4501176495553659,
+        "latency_ms": 2.5661994100028096,
+        "best_epochs": [
+          29,
+          52,
+          68,
+          31,
+          26
+        ]
+      },
+      {
+        "test_person": "khoi",
+        "accuracy": 0.5375,
+        "macro_f1": 0.5283026777144425,
+        "latency_ms": 2.7371338900047704,
+        "best_epochs": [
+          79,
+          75,
+          80,
+          104,
+          52
+        ]
+      },
+      {
+        "test_person": "tai",
+        "accuracy": 0.45625,
+        "macro_f1": 0.43278127101656516,
+        "latency_ms": 2.572520270007317,
+        "best_epochs": [
+          123,
+          74,
+          66,
+          67,
+          81
+        ]
+      },
+      {
+        "test_person": "vy",
+        "accuracy": 0.58125,
+        "macro_f1": 0.5915346619931395,
+        "latency_ms": 2.7191900700108818,
+        "best_epochs": [
+          42,
+          61,
+          38,
+          55,
+          121
+        ]
+      }
+    ],
+    "accuracy_mean": 0.509375,
+    "accuracy_std": 0.06048846308732491,
+    "macro_f1_mean": 0.5006840650698783,
+    "macro_f1_std": 0.07344923540322787,
+    "latency_mean_ms": 2.6487609100064446,
+    "latency_std_ms": 0.09201283722583117,
+    "latency_device": "cuda",
+    "std": "sample std across folds (ddof=1)",
+    "pooled_oof_accuracy": 0.509375,
+    "pooled_oof_macro_f1": 0.5191511001159592
+  }
+}
