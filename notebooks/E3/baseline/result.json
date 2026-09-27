@@ -1,29 +1,42 @@
 {
   "experiment": "E3",
+  "notebook": "e3-baseline.ipynb (Kaggle: ktoxz205/e3-baseline)",
   "description": "Attention Bi-LSTM, LOSO 4-fold: moi fold train 3 nguoi va test 1 nguoi unseen; giu cau hinh E2, doi LSTM sang bidirectional; hand normalization + pose/velocity/acceleration + attention pooling; danh gia voi TTA lat ngang (trung binh softmax cua ban goc va ban lat), latency gom 2 luot forward.",
   "results": [
     {
       "test_person": "hau",
       "accuracy": 0.61875,
-      "latency_ms": 2.020665
+      "macro_f1": 0.590289,
+      "selected_epochs": 11,
+      "latency_ms": 2.020665333331332
     },
     {
       "test_person": "khoi",
       "accuracy": 0.60625,
-      "latency_ms": 2.11128
+      "macro_f1": 0.59221,
+      "selected_epochs": 28,
+      "latency_ms": 2.11128019999857
     },
     {
       "test_person": "tai",
       "accuracy": 0.56875,
-      "latency_ms": 2.210538
+      "macro_f1": 0.543034,
+      "selected_epochs": 28,
+      "latency_ms": 2.2105376666672782
     },
     {
       "test_person": "vy",
       "accuracy": 0.8125,
-      "latency_ms": 2.312082
+      "macro_f1": 0.811653,
+      "selected_epochs": 26,
+      "latency_ms": 2.3120824333318524
     }
   ],
   "accuracy_mean": 0.6515625,
   "accuracy_std": 0.109375,
-  "latency_mean_ms": 2.16364125
+  "macro_f1_mean": 0.634296,
+  "macro_f1_std": 0.120405,
+  "pooled_oof_accuracy": 0.651563,
+  "pooled_oof_macro_f1": 0.649408,
+  "latency_mean_ms": 2.163641408332258
 }

@@ -1,34 +1,35 @@
 {
   "experiment": "E3+",
-  "description": "Domain-Invariant Motion Bi-LSTM, LOSO 4-fold: moi fold train 3 nguoi va test 1 nguoi unseen; hand normalization + motion features + DANN + EMA, single-model deploy, khong TTA.",
+  "notebook": "4-fold.ipynb (Kaggle: ktoxz205/4-fold)",
+  "description": "Domain-Invariant Motion Bi-LSTM, LOSO 4-fold: moi fold train 3 nguoi va test 1 nguoi unseen; hand normalization + motion features + DANN + EMA, single-model deploy, khong TTA (TTA_GAMMAS=(1.0,) tai inference).",
   "results": [
     {
       "test_person": "hau",
       "accuracy": 0.825,
       "macro_f1": 0.804296,
       "selected_epochs": 23,
-      "latency_ms": 4.492624
+      "latency_ms": 4.492624033332504
     },
     {
       "test_person": "khoi",
       "accuracy": 0.7375,
       "macro_f1": 0.750883,
       "selected_epochs": 26,
-      "latency_ms": 4.740589
+      "latency_ms": 4.740589066667174
     },
     {
       "test_person": "tai",
       "accuracy": 0.69375,
       "macro_f1": 0.695444,
       "selected_epochs": 30,
-      "latency_ms": 4.776611
+      "latency_ms": 4.776610933333814
     },
     {
       "test_person": "vy",
       "accuracy": 0.875,
       "macro_f1": 0.873026,
       "selected_epochs": 23,
-      "latency_ms": 4.671204
+      "latency_ms": 4.671203600003082
     }
   ],
   "accuracy_mean": 0.782813,
@@ -37,5 +38,5 @@
   "macro_f1_std": 0.075803,
   "pooled_oof_accuracy": 0.782813,
   "pooled_oof_macro_f1": 0.790175,
-  "latency_mean_ms": 4.670257
+  "latency_mean_ms": 4.670256908334143
 }
