@@ -1,0 +1,9 @@
+Tổng số file: 640 | người: hau, khoi, tai, vy | lớp: 34
+Số mẫu mỗi người: hau=160, khoi=160, tai=160, vy=160
+Số mẫu mỗi (người, lớp): tối thiểu 4, tối đa 6
+File sai kích thước: 0 | có NaN: 0
+Mẫu mất tay > 20%: 16 | > 30%: 10
+Tỉ lệ mất tay trung bình theo người (%): hau=0.5, khoi=6.9, tai=5.0, vy=0.4
+Tỉ lệ khung tay sát/ra ngoài mép theo người (%): hau=1.7, khoi=4.6, tai=9.7, vy=6.5
+Trung vị năng lượng chuyển động: tĩnh=0.0246, động=0.0796; mốc trung bình tĩnh=0.0645
+Lớp động có năng lượng TB cao hơn mốc tĩnh: 11/12; thấp hơn: đ

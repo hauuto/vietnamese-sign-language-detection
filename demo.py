@@ -19,9 +19,10 @@ Tính năng chung:
   4. Từ chối dự đoán: ngưỡng xác suất + khoảng cách top1-top2 + đồng thuận giữa các fold/view
      (+ energy tùy chọn), kèm ổn định theo thời gian (K lần dự đoán liên tiếp giống nhau).
      Ngưỡng chỉnh trực tiếp khi chạy bằng phím 1/2, 3/4, 5/6.
-  6. Ổn định landmark: ngưỡng tin cậy MediaPipe cao hơn (0.7/0.7/0.6), tối đa 2 tay,
+  5. Ổn định landmark: ngưỡng tin cậy MediaPipe cao hơn (0.7/0.7/0.6), tối đa 2 tay,
      lọc One Euro (--smooth display|all|off, phím S).
-  5. Giao diện 3 tầng: (1) kết quả chính của E3 (ký hiệu, độ tin cậy, chấp nhận/từ chối)
+  6. Chụp màn hình giao diện bằng phím P (lưu vào outputs/screenshots/).
+  7. Giao diện 3 tầng: (1) kết quả chính của E3 (ký hiệu, xác suất top-1, chấp nhận/từ chối)
      và chuỗi đã nhận; (2) so sánh nhanh 4 thực nghiệm; (3) chi tiết kỹ thuật (phím D).
      Chữ có dấu cần Pillow (pip install pillow).
 
@@ -645,7 +646,7 @@ def open_camera(camera_index: int, camera_url):
 
 # ---------------------------------------------------------------------------
 # Giao diện
-#   Tầng 1 (người xem): ký hiệu hiện tại + độ tin cậy + chấp nhận/từ chối, chuỗi đã nhận.
+#   Tầng 1 (người xem): ký hiệu hiện tại + xác suất top-1 + chấp nhận/từ chối, chuỗi đã nhận.
 #   Tầng 2 (người vận hành): so sánh nhanh 4 thực nghiệm.
 #   Tầng 3 (kỹ thuật): ngưỡng, margin, phiếu, latency — ẩn, bật bằng phím D.
 # ---------------------------------------------------------------------------
@@ -846,7 +847,7 @@ class DemoUI:
         t = self.t
         code = decision.last_reason
         if code == "prob":
-            return f"Độ tin cậy {r['prob'] * 100:.0f}% thấp hơn ngưỡng {t['min_prob'] * 100:.0f}%"
+            return f"Xác suất top-1 {r['prob'] * 100:.0f}% thấp hơn ngưỡng {t['min_prob'] * 100:.0f}%"
         if code == "margin":
             l2, p2 = r["top"][1]
             return (f"Lẫn với {pretty(l2)} ({p2 * 100:.0f}%) · cách biệt {r['margin'] * 100:.0f}%"
@@ -860,7 +861,7 @@ class DemoUI:
 
     def _main_result(self, img, x, y, w, display, panel, decision, r):
         """Accept và reject dùng CÙNG một cấu trúc: ký hiệu -> dòng phụ -> trạng thái -> 5 dòng tiêu chí.
-        Ở trạng thái từ chối, % chỉ là độ tin cậy của ỨNG VIÊN, không phải của quyết định."""
+        Ở trạng thái từ chối, % chỉ là xác suất softmax của ỨNG VIÊN (chưa hiệu chỉnh), không phải xác suất quyết định đúng."""
         T, t = self.text, self.t
         T.add(f"Kết quả chính · {display} ({KIND_NAME.get(panel.kind, panel.kind)})", (x, y), 13, C_MUTED)
         label, color, state = panel_state(decision, r, self.stable_k)
@@ -875,13 +876,13 @@ class DemoUI:
             T.add("?", (cx, cy), 60, C_REJECT, True, "mm")
             T.add("KHÔNG XÁC ĐỊNH", (cx, cy + 50), 18, C_REJECT, True, "mm")
             T.add(f"ứng viên gần nhất  {cand}", (cx, cy + 76), 14, C_MUTED, anchor="mm")
-            headline, h_color = "✕ Không nhận vào chuỗi", C_REJECT
+            headline, h_color = "Không nhận vào chuỗi", C_REJECT
         else:
             big = pretty(r["label"])
             T.add(big, (cx, cy), 80 if len(big) <= 2 else 46, color, True, "mm")
             T.add(f"{r['prob'] * 100:.0f}%", (cx, cy + 56), 26, color, True, "mm")
             if state == "ok":
-                headline, h_color = "✓ Chấp nhận · đã thêm vào chuỗi", C_OK
+                headline, h_color = "Chấp nhận · đã thêm vào chuỗi", C_OK
             else:
                 n = sum(1 for v in decision.history if v == r["label"])
                 headline, h_color = f"… Đang xác nhận {n}/{self.stable_k} · giữ nguyên ký hiệu", C_WAIT
@@ -895,7 +896,7 @@ class DemoUI:
         rows = [
             ("Ứng viên", cand, None),
             ("Gần nhất", f"{pretty(second[0])} · {second[1] * 100:.0f}%", None),
-            ("Độ tin cậy", f"{r['prob'] * 100:.0f}%  /  cần ≥ {t['min_prob'] * 100:.0f}%", r["prob"] >= t["min_prob"]),
+            ("Xác suất top-1", f"{r['prob'] * 100:.0f}%  /  cần ≥ {t['min_prob'] * 100:.0f}%", r["prob"] >= t["min_prob"]),
             ("Margin", f"{r['margin'] * 100:.0f}%  /  cần ≥ {t['min_margin'] * 100:.0f}%", r["margin"] >= t["min_margin"]),
             ("Đồng thuận fold", f"{round(r['agree'] * n)}/{n}  /  cần ≥ {need_votes}", r["agree"] >= t["min_agree"]),
         ]
@@ -903,7 +904,7 @@ class DemoUI:
         for k, v, passed in rows:
             T.add(k, (x, ry), 13, C_MUTED)
             vcolor = C_TEXT if passed is None else (C_OK if passed else C_REJECT)
-            mark = "" if passed is None else ("  ✓" if passed else "  ✕")
+            mark = "" if passed is None else ("  (đạt)" if passed else "  (không đạt)")
             T.add(v + mark, (x + w, ry), 13, vcolor, passed is not None, "ra")
             ry += 18
 
@@ -941,7 +942,7 @@ class DemoUI:
         T.add("CHI TIẾT KỸ THUẬT", (x, y + 12), 12, C_MUTED, True)
         self._key_chip(img, x + w, y + 10, "D")
         T.add("NGƯỠNG", (x, y + 36), 11, C_MUTED, True)
-        items = [("Độ tin cậy", f"{t['min_prob'] * 100:.0f}%", "1/2"), ("Margin", f"{t['min_margin'] * 100:.0f}%", "3/4"),
+        items = [("Xác suất top-1", f"{t['min_prob'] * 100:.0f}%", "1/2"), ("Margin", f"{t['min_margin'] * 100:.0f}%", "3/4"),
                  ("Đồng thuận", f"{t['min_agree'] * 100:.0f}%", "5/6"), ("Giữ K lần", f"{self.stable_k}", "")]
         col = w // 4
         for i, (k, v, keys) in enumerate(items):
@@ -952,7 +953,7 @@ class DemoUI:
                 T.add(keys, (cx + T.width(v, 14, True) + 6, y + 70), 10, C_MUTED)
         hy = y + 90
         T.add("THEO MÔ HÌNH", (x, hy), 11, C_MUTED, True)
-        cols = [(0, ""), (62, "Độ tin cậy"), (140, "Margin"), (205, "Phiếu"), (w, "Độ trễ")]
+        cols = [(0, ""), (62, "Top-1"), (140, "Margin"), (205, "Phiếu"), (w, "Độ trễ")]
         for dx, name in cols[1:]:
             T.add(name, (x + dx, hy + 16), 11, C_MUTED, anchor="ra" if dx == w else "la")
         for i, ((display, panel), r) in enumerate(zip(panels, results)):
@@ -998,7 +999,7 @@ class DemoUI:
 
     def _footer(self, img, y, width, has_extended, mode):
         T = self.text
-        keys = [("Q", "Thoát"), ("R", "Reset"), ("C", "Xóa chuỗi")]
+        keys = [("Q", "Thoát"), ("R", "Reset"), ("C", "Xóa chuỗi"), ("P", "Chụp")]
         if has_extended:
             keys.append(("M", "Bản mở rộng" if mode == "baseline" else "Bản baseline"))
         keys.append(("D", "Chi tiết kỹ thuật"))
@@ -1124,7 +1125,7 @@ def run_camera(modes, args, thresholds):
     fps, last_frame_t = 0.0, time.perf_counter()
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     fitted = False
-    print("Q: thoát | R: reset | C: xóa chuỗi | M: đổi chế độ | D: chi tiết kỹ thuật | 1/2, 3/4, 5/6: chỉnh ngưỡng")
+    print("Q: thoát | R: reset | C: xóa chuỗi | P: chụp màn hình | M: đổi chế độ | D: chi tiết kỹ thuật | 1/2, 3/4, 5/6: chỉnh ngưỡng")
 
     def primary_index():
         # Thẻ dùng để ghép chuỗi: E3 nếu có, không thì thẻ cuối.
@@ -1227,6 +1228,12 @@ def run_camera(modes, args, thresholds):
                 fitted = True
             cv2.imshow(window_name, fit_to_window(canvas, window_name))
             key = cv2.waitKey(1) & 0xFF
+            if key == ord("p"):
+                shot_dir = ROOT / "outputs" / "screenshots"
+                shot_dir.mkdir(parents=True, exist_ok=True)
+                shot = shot_dir / f"demo_{mode}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+                cv2.imwrite(str(shot), canvas)      # ảnh gốc, không co giãn theo cửa sổ
+                print(f"Đã lưu ảnh: {shot}")
             if key == ord("s"):
                 args.smooth = {"off": "display", "display": "all", "all": "off"}[args.smooth]
                 smoother.reset()

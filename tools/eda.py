@@ -1,285 +1,326 @@
 """
-EDA (phân tích khám phá dữ liệu) trên tập landmark đã trích.
+EDA (phân tích khám phá dữ liệu) trên tập landmark đã trích — bản vẽ lại cho báo cáo Word.
 
-Yêu cầu: pip install matplotlib   (numpy đã có sẵn trong requirements.txt)
+Thay đổi so với bản cũ:
+  - Ảnh 300 dpi, khổ vừa trang A4 (rộng ~16 cm), chữ 9–10 pt; không đặt tiêu đề trong hình
+    (tiêu đề nằm ở chú thích Word). Muốn có tiêu đề để dùng cho slide: --titles.
+  - Hai biểu đồ số mẫu (4 cột 160 và 136 thanh) được thay bằng MỘT heatmap 4 người × 34 lớp.
+  - Ngưỡng mất tay thống nhất với check_landmarks.py (20%); mốc 30% vẫn được vẽ để đối chiếu
+    với số liệu đã viết trong báo cáo. Bỏ các mốc 5% / 15% không có căn cứ.
+  - Tỉ lệ mất tay và tỉ lệ tay sát mép khung được gộp vào một hình (hai panel).
+  - Toàn bộ con số dùng trong báo cáo được ghi ra outputs/eda/eda_summary.txt và các file CSV.
 
-Chạy: python eda.py
-Kết quả: lưu toàn bộ biểu đồ vào thư mục eda_output/ (không in bảng số ra console nữa —
-mọi thông tin đều được thể hiện dưới dạng biểu đồ).
+Yêu cầu: pip install matplotlib   (numpy đã có trong requirements.txt)
+Chạy:    python eda.py            (hoặc python eda.py --titles cho bản dùng trên slide)
 """
+import argparse
+import csv
+import os
 import re
 import sys
-import os
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from matplotlib.colors import ListedColormap
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),".." ,"src"))
-from classes import ALL_CLASSES, TINH, DONG, class_group, samples_for, display_name
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from classes import ALL_CLASSES, class_group, display_name  # noqa: E402
 
-LANDMARK_DIR = Path("landmarks/raw")
+LANDMARK_DIR = Path("../landmarks/raw")
 OUT_DIR = Path("outputs/eda")
 FNAME_RE = re.compile(r"^([a-z_]+)_([a-z]+)_([AB])_(\d+)\.npy$")
 
-# Bảng màu — xanh dương (chính) và cam (đối chiếu), theo hệ màu categorical
-# đã được kiểm định (đủ khoảng cách nhận biết kể cả với người mù màu đỏ-lục).
+SEQ_LEN = 45
+NGUONG_CANH_BAO = 0.20     # trùng check_landmarks.py
+NGUONG_NANG = 0.30         # mốc đã dùng trong báo cáo (10 mẫu)
+BIEN_KHUNG = 0.02          # tọa độ ngoài [-0.02, 1.02] được xem là sát/ra ngoài mép khung
+
+# Khổ hình theo trang A4 (lề 2 cm hai bên -> ~16 cm = 6.3 in)
+W_FULL = 6.3
 MAU_XANH = "#2a78d6"
 MAU_CAM = "#eb6834"
-MAU_XAM = "#9a9a9a"
+MAU_DO = "#c0392b"
+MAU_XAM = "#6b6b6b"
 
-plt.rcParams["axes.unicode_minus"] = False
-plt.rcParams["font.family"] = "DejaVu Sans"  # có đủ dấu tiếng Việt
+plt.rcParams.update({
+    "font.family": "DejaVu Sans",   # có đủ dấu tiếng Việt
+    "font.size": 9,
+    "axes.titlesize": 10,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "axes.unicode_minus": False,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.03,
+})
+
+SHOW_TITLES = False
 
 
+def tieu_de(ax, text):
+    if SHOW_TITLES:
+        ax.set_title(text)
+
+
+def luu(fig, ten):
+    path = OUT_DIR / ten
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Đọc dữ liệu + chỉ số cho từng mẫu
+# ---------------------------------------------------------------------------
 def load_all():
-    records = []
+    records, bo_qua = [], []
     for f in sorted(LANDMARK_DIR.glob("*/*.npy")):
         m = FNAME_RE.match(f.name)
         if not m:
-            print(f"CẢNH BÁO: không đọc được tên file theo đúng quy ước: {f.name}")
+            bo_qua.append(f.name)
             continue
         code, person, block, seq = m.groups()
-        arr = np.load(f)
-        records.append({
-            "path": f, "code": code, "person": person, "block": block,
-            "seq": int(seq), "arr": arr,
-        })
+        records.append({"path": f, "code": code, "person": person, "block": block,
+                        "seq": int(seq), "arr": np.load(f)})
+    if bo_qua:
+        print(f"CẢNH BÁO: {len(bo_qua)} file sai quy ước tên, ví dụ: {bo_qua[:3]}")
     return records
 
 
-def bieu_do_so_luong(records):
-    """Số mẫu thực tế theo từng người."""
-    persons = sorted(set(r["person"] for r in records))
-    count = defaultdict(int)
-    for r in records:
-        count[(r["code"], r["person"])] += 1
-
-    tong_thuc_te = {p: 0 for p in persons}
-    for code in ALL_CLASSES:
-        for p in persons:
-            tong_thuc_te[p] += count[(code, p)]
-
-    x = np.arange(len(persons))
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bars = ax.bar(x, [tong_thuc_te[p] for p in persons], color=MAU_XANH)
-    for b, p in zip(bars, persons):
-        ax.text(b.get_x() + b.get_width() / 2, tong_thuc_te[p] + 2,
-                 str(tong_thuc_te[p]), ha="center", fontsize=9)
-    ax.set_xticks(x)
-    ax.set_xticklabels(persons)
-    ax.set_ylabel("Số mẫu")
-    ax.set_title("Số mẫu thực tế, theo từng người")
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    fig.savefig(OUT_DIR / "01_so_luong_mau.png", dpi=120)
-    plt.close(fig)
-
-    # Số mẫu thực tế theo từng tổ hợp (lớp, người)
-    labels = []
-    values = []
-    for code in ALL_CLASSES:
-        for p in persons:
-            labels.append(f"{display_name(code)} / {p}")
-            values.append(count[(code, p)])
-
-    fig, ax = plt.subplots(figsize=(9, max(3, 0.28 * len(labels))))
-    ax.barh(labels, values, color=MAU_XANH)
-    ax.set_xlabel("Số mẫu thực tế")
-    ax.set_title("Số mẫu thực tế theo từng tổ hợp (lớp, người)")
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    fig.savefig(OUT_DIR / "02_so_mau_theo_to_hop.png", dpi=120)
-    plt.close(fig)
-
-
-def bieu_do_chat_luong(records):
-    """Tỉ lệ bước bị mất tay (toàn số 0) sau resample — phân bố + số file lỗi."""
-    loi_shape = 0
-    loi_nan = 0
-    ty_le_mat_tay = []
+def tinh_chi_so(records):
+    """Gắn các chỉ số chất lượng/chuyển động vào từng record. Trả về số file lỗi shape/NaN."""
+    loi_shape = loi_nan = 0
     for r in records:
         arr = r["arr"]
-        if arr.shape[0] != 45 or arr.shape[1] not in (63, 126):
+        r["hop_le"] = False
+        if arr.ndim != 2 or arr.shape[0] != SEQ_LEN or arr.shape[1] not in (63, 126):
             loi_shape += 1
             continue
         if np.isnan(arr).any():
             loi_nan += 1
             continue
-        ty_le = float(np.all(arr == 0, axis=1).mean())
-        r["ty_le_mat_tay"] = ty_le
-        ty_le_mat_tay.append(ty_le)
+        r["hop_le"] = True
+        mat = np.all(arr == 0, axis=1)
+        r["ty_le_mat_tay"] = float(mat.mean())
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        real = arr[~mat]
+        r["so_khung_that"] = int(real.shape[0])
+        if real.shape[0]:
+            pts = real.reshape(real.shape[0], -1, 3)
+            x, y = pts[:, :, 0], pts[:, :, 1]
+            ngoai = (x < -BIEN_KHUNG) | (x > 1 + BIEN_KHUNG) | (y < -BIEN_KHUNG) | (y > 1 + BIEN_KHUNG)
+            r["so_khung_sat_mep"] = int(ngoai.any(axis=1).sum())
+        else:
+            r["so_khung_sat_mep"] = 0
+        # Năng lượng chuyển động: độ dời trung bình giữa hai khung có tay liên tiếp (tọa độ thô).
+        r["chuyen_dong"] = float(np.linalg.norm(np.diff(real, axis=0), axis=1).mean()) if real.shape[0] >= 2 else None
+    return loi_shape, loi_nan
 
-    # (a) phân bố tỉ lệ mất tay
+
+# ---------------------------------------------------------------------------
+# Hình 1 — số mẫu theo (người, lớp): một heatmap thay cho hai biểu đồ cũ
+# ---------------------------------------------------------------------------
+def hinh_so_mau(records, persons):
+    count = defaultdict(int)
+    for r in records:
+        count[(r["person"], r["code"])] += 1
+    # Lớp tĩnh trước, lớp động sau, để thấy rõ 4 mẫu và 6 mẫu
+    classes = [c for c in ALL_CLASSES if class_group(c) == "tinh"] + \
+              [c for c in ALL_CLASSES if class_group(c) == "dong"]
+    M = np.array([[count[(p, c)] for c in classes] for p in persons])
+
+    fig, ax = plt.subplots(figsize=(W_FULL, 0.42 * len(persons) + 0.9))
+    vals = sorted(set(M.flatten()))
+    palette = ["#d9e7f7", "#9cc2ec", MAU_XANH, "#1b4f8f"]
+    cmap = ListedColormap(palette[:max(1, len(vals))])
+    idx = np.searchsorted(vals, M)
+    ax.imshow(idx, cmap=cmap, aspect="auto", vmin=0, vmax=max(1, len(vals) - 1))
+    for i in range(M.shape[0]):
+        for j in range(M.shape[1]):
+            ax.text(j, i, str(M[i, j]), ha="center", va="center", fontsize=7,
+                    color="white" if idx[i, j] >= 2 else "black")
+    n_tinh = sum(class_group(c) == "tinh" for c in classes)
+    ax.axvline(n_tinh - 0.5, color="black", linewidth=1.2)
+    ax.set_xticks(range(len(classes)))
+    ax.set_xticklabels([display_name(c) for c in classes], rotation=90)
+    ax.set_yticks(range(len(persons)))
+    ax.set_yticklabels([f"{p} ({M[i].sum()})" for i, p in enumerate(persons)])
+    ax.tick_params(length=0)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.text((n_tinh - 1) / 2, -0.8, f"{n_tinh} lớp tĩnh", ha="center", fontsize=8)
+    ax.text(n_tinh + (len(classes) - n_tinh - 1) / 2, -0.8, f"{len(classes) - n_tinh} lớp động",
+            ha="center", fontsize=8)
+    tieu_de(ax, "Số mẫu theo từng người và từng lớp")
+    p = luu(fig, "01_so_mau_nguoi_lop.png")
+
+    with open(OUT_DIR / "so_mau_nguoi_lop.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["Người"] + [display_name(c) for c in classes] + ["Tổng"])
+        for i, pr in enumerate(persons):
+            w.writerow([pr] + list(M[i]) + [M[i].sum()])
+    return p, M
+
+
+# ---------------------------------------------------------------------------
+# Hình 2 — chất lượng file: phân bố tỉ lệ mất tay + tổng hợp tình trạng
+# ---------------------------------------------------------------------------
+def hinh_chat_luong(records, loi_shape, loi_nan):
+    tl = np.array([r["ty_le_mat_tay"] for r in records if r["hop_le"]]) * 100
+    fig, axes = plt.subplots(1, 2, figsize=(W_FULL, 2.6), gridspec_kw={"width_ratios": [1.3, 1]})
+
     ax = axes[0]
-    arr_tl = np.array(ty_le_mat_tay) * 100
-    ax.hist(arr_tl, bins=30, color=MAU_XANH, edgecolor="white")
-    ax.axvline(30, color="#e34948", linestyle="--", linewidth=1.2, label="Ngưỡng cảnh báo 30%")
-    ax.set_xlabel("Tỉ lệ bước bị mất tay (%)")
-    ax.set_ylabel("Số lượng mẫu")
-    ax.set_title("Phân bố tỉ lệ mất tay trên toàn bộ dữ liệu")
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
+    ax.hist(tl, bins=np.arange(0, 102.5, 2.5), color=MAU_XANH, edgecolor="white", linewidth=0.5)
+    ax.set_yscale("symlog", linthresh=10)   # phần lớn mẫu ở 0% -> thang log để thấy phần đuôi
+    ax.axvline(NGUONG_CANH_BAO * 100, color=MAU_CAM, linestyle="--", linewidth=1,
+               label=f"Ngưỡng cảnh báo {NGUONG_CANH_BAO * 100:.0f}%")
+    ax.axvline(NGUONG_NANG * 100, color=MAU_DO, linestyle=":", linewidth=1.2,
+               label=f"Mốc mất tay nặng {NGUONG_NANG * 100:.0f}%")
+    ax.set_xlabel("Tỉ lệ khung mất tay trong mẫu (%)")
+    ax.set_ylabel("Số mẫu (thang log)")
+    ax.legend(frameon=False, loc="upper right")
+    tieu_de(ax, "Phân bố tỉ lệ mất tay")
 
-    # (b) tổng số file theo tình trạng
-    so_loi = int((arr_tl > 30).sum())
-    so_binh_thuong = len(arr_tl) - so_loi
     ax = axes[1]
-    cats = ["Bình thường", "Mất tay > 30%", "Sai shape", "Có NaN"]
-    vals = [so_binh_thuong, so_loi, loi_shape, loi_nan]
-    colors = [MAU_XANH, "#e34948", "#e34948", "#e34948"]
-    bars = ax.bar(cats, vals, color=colors)
-    for b, v in zip(bars, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v + 0.5, str(v), ha="center", fontsize=9)
-    ax.set_ylabel("Số file")
-    ax.set_title("Tổng hợp chất lượng file .npy")
-    ax.spines[["top", "right"]].set_visible(False)
-    plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
-
+    n_20 = int((tl > NGUONG_CANH_BAO * 100).sum())
+    n_30 = int((tl > NGUONG_NANG * 100).sum())
+    # "> 30%" là tập con của "> 20%" -> ghi rõ trên nhãn
+    cats = ["Có NaN", "Sai kích thước", f"Mất tay > {NGUONG_NANG * 100:.0f}%",
+            f"Mất tay > {NGUONG_CANH_BAO * 100:.0f}%\n(gồm cả > {NGUONG_NANG * 100:.0f}%)",
+            f"Mất tay ≤ {NGUONG_CANH_BAO * 100:.0f}%"]
+    vals = [loi_nan, loi_shape, n_30, n_20, len(tl) - n_20]
+    colors = [MAU_XAM, MAU_XAM, MAU_DO, MAU_CAM, MAU_XANH]
+    bars = ax.barh(cats, vals, color=colors, height=0.6)
+    ax.bar_label(bars, padding=2, fontsize=8)
+    ax.set_xlabel("Số file")
+    ax.set_xlim(0, max(vals) * 1.2)
+    tieu_de(ax, "Tổng hợp chất lượng file")
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "03_chat_luong_du_lieu.png", dpi=120)
-    plt.close(fig)
+    return luu(fig, "02_chat_luong_du_lieu.png"), n_20, n_30
 
 
-def bieu_do_khoang_gia_tri(records):
-    """Tỉ lệ khung hình có toạ độ x/y vượt ra ngoài [0,1] — theo từng người."""
-    per_person_oor = defaultdict(int)
-    per_person_total = defaultdict(int)
-    for r in records:
-        arr = r["arr"]
-        real_mask = ~np.all(arr == 0, axis=1)
-        if not real_mask.any():
-            continue
-        real = arr[real_mask]
-        pts = real.reshape(real.shape[0], -1, 3)
-        x, y = pts[:, :, 0], pts[:, :, 1]
-        oor = ((x < -0.02) | (x > 1.02) | (y < -0.02) | (y > 1.02))
-        per_person_oor[r["person"]] += int(oor.any(axis=1).sum())
-        per_person_total[r["person"]] += real.shape[0]
+# ---------------------------------------------------------------------------
+# Hình 3 — chất lượng theo người: mất tay (trên) và tay sát/ra ngoài mép khung (dưới)
+# ---------------------------------------------------------------------------
+def hinh_theo_nguoi(records, persons):
+    mat, mep = {}, {}
+    for p in persons:
+        rs = [r for r in records if r["hop_le"] and r["person"] == p]
+        mat[p] = 100 * np.mean([r["ty_le_mat_tay"] for r in rs]) if rs else 0.0
+        tong = sum(r["so_khung_that"] for r in rs)
+        mep[p] = 100 * sum(r["so_khung_sat_mep"] for r in rs) / tong if tong else 0.0
 
-    persons = sorted(per_person_total.keys())
-    ty_le = [100 * per_person_oor[p] / per_person_total[p] if per_person_total[p] else 0 for p in persons]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bars = ax.bar(persons, ty_le, color=MAU_CAM)
-    for b, v in zip(bars, ty_le):
-        ax.text(b.get_x() + b.get_width() / 2, v + 0.2, f"{v:.1f}%", ha="center", fontsize=9)
-    ax.axhline(5, color="#e34948", linestyle="--", linewidth=1.2, label="Mốc 5% — nên kiểm tra lại khung hình")
-    ax.set_ylabel("Tỉ lệ khung hình tay ở gần/ngoài mép khung hình (%)")
-    ax.set_title("Toạ độ tay vượt khung hình, theo từng người")
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
+    fig, axes = plt.subplots(1, 2, figsize=(W_FULL, 2.4), sharex=True)
+    for ax, data, color, label in ((axes[0], mat, MAU_XANH, "Khung mất tay (%)"),
+                                   (axes[1], mep, MAU_CAM, "Khung tay sát mép (%)")):
+        bars = ax.bar(persons, [data[p] for p in persons], color=color, width=0.6)
+        ax.bar_label(bars, labels=[f"{data[p]:.1f}" for p in persons], padding=2, fontsize=8)
+        ax.set_ylabel(label)
+        ax.set_ylim(0, max(data.values()) * 1.2 + 0.5)
+    tieu_de(axes[0], "Mất tay theo người")
+    tieu_de(axes[1], "Tay sát mép khung theo người")
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "04_khoang_gia_tri_toa_do.png", dpi=120)
-    plt.close(fig)
+    return luu(fig, "03_chat_luong_theo_nguoi.png"), mat, mep
 
 
-def nang_luong_chuyen_dong(arr):
-    real_mask = ~np.all(arr == 0, axis=1)
-    real = arr[real_mask]
-    if real.shape[0] < 2:
-        return None
-    diffs = np.diff(real, axis=0)
-    return float(np.linalg.norm(diffs, axis=1).mean())
+# ---------------------------------------------------------------------------
+# Hình 4 — năng lượng chuyển động: tĩnh vs động và từng lớp động
+# ---------------------------------------------------------------------------
+def hinh_chuyen_dong(records):
+    tinh = [r["chuyen_dong"] for r in records
+            if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "tinh"]
+    dong = [r["chuyen_dong"] for r in records
+            if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "dong"]
+    moc = float(np.mean(tinh))
 
-
-def bieu_do_chuyen_dong(records):
-    """So sánh năng lượng chuyển động: lớp tĩnh vs lớp động — bằng chứng cho lựa chọn LSTM/Bi-LSTM."""
-    for r in records:
-        e = nang_luong_chuyen_dong(r["arr"])
-        if e is not None:
-            r["chuyen_dong"] = e
-
-    tinh = [r["chuyen_dong"] for r in records if "chuyen_dong" in r and class_group(r["code"]) == "tinh"]
-    dong = [r["chuyen_dong"] for r in records if "chuyen_dong" in r and class_group(r["code"]) == "dong"]
-
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-    ax = axes[0]
-    bp = ax.boxplot([tinh, dong], tick_labels=["Tĩnh (22 lớp)", "Động (12 lớp)"],
-                     patch_artist=True, widths=0.5)
-    for patch, color in zip(bp["boxes"], [MAU_XANH, MAU_CAM]):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.75)
-    ax.set_ylabel("Năng lượng chuyển động trung bình / mẫu")
-    ax.set_title("So sánh chuyển động: nhóm lớp tĩnh và nhóm lớp động")
-    ax.spines[["top", "right"]].set_visible(False)
-
-    # Trung bình theo từng lớp động, để phát hiện lớp có chuyển động bất thường thấp
     per_class = defaultdict(list)
     for r in records:
-        if "chuyen_dong" in r and class_group(r["code"]) == "dong":
+        if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "dong":
             per_class[r["code"]].append(r["chuyen_dong"])
-    means = sorted(((display_name(c), np.mean(v)) for c, v in per_class.items()), key=lambda x: x[1])
+    means = sorted(((display_name(c), float(np.mean(v))) for c, v in per_class.items()), key=lambda x: x[1])
+
+    fig, axes = plt.subplots(1, 2, figsize=(W_FULL, 2.8), gridspec_kw={"width_ratios": [1, 1.4]})
+    ax = axes[0]
+    bp = ax.boxplot([tinh, dong], tick_labels=[f"Tĩnh\n({len(tinh)} mẫu)", f"Động\n({len(dong)} mẫu)"],
+                    patch_artist=True, widths=0.5, flierprops={"markersize": 3})
+    for patch, color in zip(bp["boxes"], [MAU_XANH, MAU_CAM]):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.8)
+    for med in bp["medians"]:
+        med.set_color("black")
+    ax.set_ylabel("Năng lượng chuyển động / mẫu")
+    tieu_de(ax, "Nhóm tĩnh và nhóm động")
 
     ax = axes[1]
     labels = [x[0] for x in means]
     values = [x[1] for x in means]
-    colors = [MAU_CAM if v < np.mean(tinh) else MAU_XANH for v in values]
-    ax.barh(labels, values, color=colors)
-    ax.axvline(np.mean(tinh), color="black", linestyle="--", linewidth=1,
-               label="Trung bình nhóm tĩnh (mốc so sánh)")
+    ax.barh(labels, values, color=[MAU_XAM if v < moc else MAU_CAM for v in values], height=0.65)
+    ax.axvline(moc, color="black", linestyle="--", linewidth=1, label="Trung bình nhóm tĩnh")
     ax.set_xlabel("Năng lượng chuyển động trung bình")
-    ax.set_title("Từng lớp động, so với mốc trung bình nhóm tĩnh")
-    ax.legend(loc="lower right", fontsize=8)
-    ax.spines[["top", "right"]].set_visible(False)
-
+    ax.legend(frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0))
+    ax.set_xlim(0, max(values + [moc]) * 1.08)
+    tieu_de(ax, "Từng lớp động")
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "05_nang_luong_chuyen_dong.png", dpi=120)
-    plt.close(fig)
+    tren_moc = sum(v > moc for v in values)
+    duoi_moc = [l for l, v in means if v <= moc]
+    return luu(fig, "04_nang_luong_chuyen_dong.png"), (float(np.median(tinh)), float(np.median(dong)),
+                                                        moc, tren_moc, len(values), duoi_moc)
 
 
-def bieu_do_theo_nguoi(records):
-    """Tỉ lệ mất tay trung bình, so sánh giữa 4 người — phát hiện người quay bất thường."""
-    by_person = defaultdict(list)
-    for r in records:
-        if "ty_le_mat_tay" in r:
-            by_person[r["person"]].append(r["ty_le_mat_tay"])
-
-    persons = sorted(by_person.keys())
-    means = [100 * np.mean(by_person[p]) for p in persons]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    colors = [MAU_CAM if m > 15 else MAU_XANH for m in means]
-    bars = ax.bar(persons, means, color=colors)
-    for b, v in zip(bars, means):
-        ax.text(b.get_x() + b.get_width() / 2, v + 0.3, f"{v:.1f}%", ha="center", fontsize=9)
-    ax.axhline(15, color="#e34948", linestyle="--", linewidth=1.2, label="Mốc 15% — cao bất thường")
-    ax.set_ylabel("Tỉ lệ mất tay trung bình (%)")
-    ax.set_title("So sánh chất lượng dữ liệu giữa 4 người quay")
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    fig.savefig(OUT_DIR / "06_so_sanh_theo_nguoi.png", dpi=120)
-    plt.close(fig)
-
-
+# ---------------------------------------------------------------------------
 def main():
-    OUT_DIR.mkdir(exist_ok=True)
+    global SHOW_TITLES
+    ap = argparse.ArgumentParser(description="EDA tập landmark VSL — ảnh cho báo cáo")
+    ap.add_argument("--titles", action="store_true", help="Thêm tiêu đề trong hình (dùng cho slide)")
+    SHOW_TITLES = ap.parse_args().titles
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     records = load_all()
     if not records:
         print(f"Không tìm thấy file .npy nào trong {LANDMARK_DIR}. Đã chạy src/extract_landmarks.py chưa?")
         return
+    persons = sorted({r["person"] for r in records})
+    loi_shape, loi_nan = tinh_chi_so(records)
 
-    bieu_do_so_luong(records)
-    bieu_do_chat_luong(records)
-    bieu_do_khoang_gia_tri(records)
-    bieu_do_chuyen_dong(records)
-    bieu_do_theo_nguoi(records)
+    f1, M = hinh_so_mau(records, persons)
+    f2, n_20, n_30 = hinh_chat_luong(records, loi_shape, loi_nan)
+    f3, mat, mep = hinh_theo_nguoi(records, persons)
+    f4, (med_t, med_d, moc, tren, n_dong, duoi) = hinh_chuyen_dong(records)
 
-    print(f"Đã lưu toàn bộ biểu đồ vào thư mục: {OUT_DIR.resolve()}")
-    print("  01_so_luong_mau.png          — tổng số mẫu thực tế theo người")
-    print("  02_so_mau_theo_to_hop.png    — số mẫu thực tế theo từng tổ hợp (lớp, người)")
-    print("  03_chat_luong_du_lieu.png    — phân bố mất tay + tổng hợp lỗi")
-    print("  04_khoang_gia_tri_toa_do.png — toạ độ vượt khung hình, theo người")
-    print("  05_nang_luong_chuyen_dong.png— tĩnh vs động, bằng chứng chọn LSTM/Bi-LSTM")
-    print("  06_so_sanh_theo_nguoi.png    — chất lượng dữ liệu theo từng người")
+    # Tệp chi tiết từng mẫu, để tra lại khi viết báo cáo
+    with open(OUT_DIR / "chi_tiet_mau.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["file", "lop", "nguoi", "block", "hop_le", "ty_le_mat_tay_%", "khung_sat_mep", "chuyen_dong"])
+        for r in records:
+            w.writerow([r["path"].name, r["code"], r["person"], r["block"], r["hop_le"],
+                        f"{100 * r.get('ty_le_mat_tay', float('nan')):.1f}", r.get("so_khung_sat_mep", ""),
+                        "" if r.get("chuyen_dong") is None else f"{r['chuyen_dong']:.5f}"])
+
+    lines = [
+        f"Tổng số file: {len(records)} | người: {', '.join(persons)} | lớp: {M.shape[1]}",
+        "Số mẫu mỗi người: " + ", ".join(f"{p}={M[i].sum()}" for i, p in enumerate(persons)),
+        f"Số mẫu mỗi (người, lớp): tối thiểu {M.min()}, tối đa {M.max()}",
+        f"File sai kích thước: {loi_shape} | có NaN: {loi_nan}",
+        f"Mẫu mất tay > {NGUONG_CANH_BAO * 100:.0f}%: {n_20} | > {NGUONG_NANG * 100:.0f}%: {n_30}",
+        "Tỉ lệ mất tay trung bình theo người (%): " + ", ".join(f"{p}={mat[p]:.1f}" for p in persons),
+        "Tỉ lệ khung tay sát/ra ngoài mép theo người (%): " + ", ".join(f"{p}={mep[p]:.1f}" for p in persons),
+        f"Trung vị năng lượng chuyển động: tĩnh={med_t:.4f}, động={med_d:.4f}; mốc trung bình tĩnh={moc:.4f}",
+        f"Lớp động có năng lượng TB cao hơn mốc tĩnh: {tren}/{n_dong}; thấp hơn: {', '.join(duoi) or 'không có'}",
+    ]
+    (OUT_DIR / "eda_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+    print(f"\nĐã lưu vào {OUT_DIR.resolve()}:")
+    for f in (f1, f2, f3, f4):
+        print("  ", f.name)
+    print("   so_mau_nguoi_lop.csv, chi_tiet_mau.csv, eda_summary.txt")
 
 
 if __name__ == "__main__":
