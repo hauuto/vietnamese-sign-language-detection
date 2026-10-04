@@ -30,6 +30,15 @@ from matplotlib.colors import ListedColormap
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from classes import ALL_CLASSES, class_group, display_name  # noqa: E402
 
+# Theo Thông tư 17/2020/TT-BGDĐT, chữ đ là ký hiệu TĨNH. Khi quay, nhóm xếp đ vào nhóm
+# 6 mẫu/người cùng các chữ có dấu phụ; ở đây chỉ đổi nhóm để phân tích, dữ liệu giữ nguyên.
+TINH_THEO_CHUAN = {"dd"}
+
+
+def nhom(code):
+    """Nhóm tĩnh/động theo chuẩn ngôn ngữ (dùng cho EDA), khác với quy cách số mẫu khi quay."""
+    return "tinh" if code in TINH_THEO_CHUAN else class_group(code)
+
 LANDMARK_DIR = Path("../landmarks/raw")
 OUT_DIR = Path("outputs/eda")
 FNAME_RE = re.compile(r"^([a-z_]+)_([a-z]+)_([AB])_(\d+)\.npy$")
@@ -63,6 +72,7 @@ plt.rcParams.update({
 })
 
 SHOW_TITLES = False
+NANG_LUONG_DD = float("nan")
 
 
 def tieu_de(ax, text):
@@ -132,9 +142,9 @@ def hinh_so_mau(records, persons):
     count = defaultdict(int)
     for r in records:
         count[(r["person"], r["code"])] += 1
-    # Lớp tĩnh trước, lớp động sau, để thấy rõ 4 mẫu và 6 mẫu
-    classes = [c for c in ALL_CLASSES if class_group(c) == "tinh"] + \
-              [c for c in ALL_CLASSES if class_group(c) == "dong"]
+    # Lớp tĩnh trước, lớp động sau. Lớp đ thuộc nhóm tĩnh nhưng được quay 6 mẫu/người.
+    classes = [c for c in ALL_CLASSES if nhom(c) == "tinh"] + \
+              [c for c in ALL_CLASSES if nhom(c) == "dong"]
     M = np.array([[count[(p, c)] for c in classes] for p in persons])
 
     fig, ax = plt.subplots(figsize=(W_FULL, 0.42 * len(persons) + 0.9))
@@ -147,7 +157,7 @@ def hinh_so_mau(records, persons):
         for j in range(M.shape[1]):
             ax.text(j, i, str(M[i, j]), ha="center", va="center", fontsize=7,
                     color="white" if idx[i, j] >= 2 else "black")
-    n_tinh = sum(class_group(c) == "tinh" for c in classes)
+    n_tinh = sum(nhom(c) == "tinh" for c in classes)
     ax.axvline(n_tinh - 0.5, color="black", linewidth=1.2)
     ax.set_xticks(range(len(classes)))
     ax.set_xticklabels([display_name(c) for c in classes], rotation=90)
@@ -236,14 +246,14 @@ def hinh_theo_nguoi(records, persons):
 # ---------------------------------------------------------------------------
 def hinh_chuyen_dong(records):
     tinh = [r["chuyen_dong"] for r in records
-            if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "tinh"]
+            if r["hop_le"] and r["chuyen_dong"] is not None and nhom(r["code"]) == "tinh"]
     dong = [r["chuyen_dong"] for r in records
-            if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "dong"]
+            if r["hop_le"] and r["chuyen_dong"] is not None and nhom(r["code"]) == "dong"]
     moc = float(np.mean(tinh))
 
     per_class = defaultdict(list)
     for r in records:
-        if r["hop_le"] and r["chuyen_dong"] is not None and class_group(r["code"]) == "dong":
+        if r["hop_le"] and r["chuyen_dong"] is not None and nhom(r["code"]) == "dong":
             per_class[r["code"]].append(r["chuyen_dong"])
     means = sorted(((display_name(c), float(np.mean(v))) for c, v in per_class.items()), key=lambda x: x[1])
 
@@ -269,6 +279,9 @@ def hinh_chuyen_dong(records):
     ax.set_xlim(0, max(values + [moc]) * 1.08)
     tieu_de(ax, "Từng lớp động")
     fig.tight_layout()
+    vals_dd = [r["chuyen_dong"] for r in records if r["hop_le"] and r["chuyen_dong"] is not None and r["code"] == "dd"]
+    global NANG_LUONG_DD
+    NANG_LUONG_DD = float(np.mean(vals_dd)) if vals_dd else float("nan")
     tren_moc = sum(v > moc for v in values)
     duoi_moc = [l for l, v in means if v <= moc]
     return luu(fig, "04_nang_luong_chuyen_dong.png"), (float(np.median(tinh)), float(np.median(dong)),
@@ -314,6 +327,7 @@ def main():
         "Tỉ lệ khung tay sát/ra ngoài mép theo người (%): " + ", ".join(f"{p}={mep[p]:.1f}" for p in persons),
         f"Trung vị năng lượng chuyển động: tĩnh={med_t:.4f}, động={med_d:.4f}; mốc trung bình tĩnh={moc:.4f}",
         f"Lớp động có năng lượng TB cao hơn mốc tĩnh: {tren}/{n_dong}; thấp hơn: {', '.join(duoi) or 'không có'}",
+        f"Lớp đ (xếp vào nhóm tĩnh theo TT 17/2020): năng lượng TB={NANG_LUONG_DD:.4f} so với mốc tĩnh {moc:.4f}",
     ]
     (OUT_DIR / "eda_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
